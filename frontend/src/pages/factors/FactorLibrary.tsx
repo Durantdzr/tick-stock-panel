@@ -166,9 +166,12 @@ function FactorCard({
   onInspect: (factorId: string) => void
   onEdit?: (factorId: string) => void
 }) {
-  const assetLabel = item.asset_types.includes('stock') && item.asset_types.includes('etf')
-    ? '股票/ETF'
-    : item.asset_types.join('/')
+  const hasAll = item.asset_types.includes('stock') && item.asset_types.includes('etf') && item.asset_types.includes('crypto')
+  const assetLabel = hasAll
+    ? '全市场'
+    : item.asset_types.includes('stock') && item.asset_types.includes('etf')
+      ? '股票/ETF'
+      : item.asset_types.join('/')
   return (
     <div
       onClick={() => onOpen(item)}

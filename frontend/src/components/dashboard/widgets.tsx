@@ -97,7 +97,7 @@ export function DistributionBars({ rows }: { rows: OverviewMarket['distribution'
 }
 
 // ===== 情绪雷达 (手写 SVG) =====
-export function EmotionRadar({ radar, score }: { radar: OverviewMarket['radar']; score: number }) {
+export function EmotionRadar({ radar, score }: { radar: NonNullable<OverviewMarket['radar']>; score: number }) {
   const size = 240
   const cx = size / 2
   const cy = size / 2

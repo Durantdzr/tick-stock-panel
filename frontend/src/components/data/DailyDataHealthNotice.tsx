@@ -31,12 +31,13 @@ export function DailyDataHealthNotice() {
   )
 }
 
-export function DailyResultStaleNotice({ result, assetType = 'stock' }: { result: unknown; assetType?: IntegrityAsset }) {
+export function DailyResultStaleNotice({ result, assetType = 'stock' }: { result: unknown; assetType?: IntegrityAsset | 'crypto' }) {
   const health = useDailyIntegrity()
   if (result === null || typeof result !== 'object') return null
   const revisions = (result as { daily_data_revisions?: DailyDataRevisions }).daily_data_revisions
-  const current = health.data?.data_revisions?.[assetType]
-  if (!current || current === (revisions?.[assetType] ?? '0')) return null
+  // crypto 无完整性修订跟踪 → current 恒空, 组件自然不渲染 (null 安全)
+  const current = (health.data?.data_revisions as Record<string, string | undefined> | undefined)?.[assetType]
+  if (!current || current === ((revisions as Record<string, string | undefined> | undefined)?.[assetType] ?? '0')) return null
   return (
     <div role="status" className="flex items-start gap-2 rounded-btn border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />

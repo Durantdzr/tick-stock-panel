@@ -642,6 +642,26 @@ class StrategyBacktestConfig:
             self.exit_fill = self.matching
 
 
+def _market_matcher_overrides(asset_type: str) -> dict:
+    """按市场交易规则派生 MatcherConfig 撮合约束 (services.trading_rules 单一权威)。
+
+    t_plus_1/lot_size/price_limit 由资产类型声明派生 (crypto: T+0/任意精度/
+    无涨跌停); 未知类型按 A 股保守默认 (fail-closed)。
+    """
+    from app.services import trading_rules
+
+    try:
+        rules = trading_rules.get_trading_rules(asset_type)
+    except ValueError:
+        return {"t_plus_1": True, "lot_size": 100.0, "price_limit": True}
+    lot = rules.get("lot_size")
+    return {
+        "t_plus_1": bool(rules.get("t_plus_1", True)),
+        "lot_size": float(lot) if lot else 0.0,
+        "price_limit": bool(rules.get("price_limit", True)),
+    }
+
+
 def _resolve_position_policy(
     config: StrategyBacktestConfig,
 ) -> tuple[Callable[..., object] | None, dict | None]:
@@ -1609,6 +1629,7 @@ class StrategyBacktestService:
             position_policy_params=position_policy_params,
             minute_fill=config.minute_fill,
             asset_type=config.asset_type,
+            **_market_matcher_overrides(config.asset_type),
         )
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
@@ -2280,6 +2301,8 @@ class StrategyBacktestService:
             # 分钟策略的成交价由 entry_price_override 提供 (触发分钟收盘),
             # 不再叠加日线口径的分钟成交细化。
             minute_fill=False,
+            asset_type=config.asset_type,
+            **_market_matcher_overrides(config.asset_type),
         )
 
         t_matrix = time.perf_counter()

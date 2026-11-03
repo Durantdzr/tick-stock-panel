@@ -21,7 +21,6 @@ import polars as pl
 
 from app.services import kline_sync
 
-
 # ---------- 辅助 ----------
 
 def _mock_minute_df(symbol: str = "600519.SH") -> pl.DataFrame:
@@ -1173,6 +1172,7 @@ def test_get_minute_batch_normal_open_not_treated_as_leading_hole(monkeypatch):
 def test_minute_refresh_is_healthy_requires_recent_round(monkeypatch):
     """is_healthy 三条件: 偏好开 + 线程活 + 最近一轮距现在 ≤ max(2×间隔, 30s)。"""
     import time as time_mod
+
     from app.services import minute_refresh as mr
 
     svc = mr.MinuteRefreshService(MagicMock())  # is_healthy 不触达 repo
@@ -1242,8 +1242,10 @@ def _compress_mock_env(monkeypatch, *, compress_on, accept="gzip, deflate"):
 def test_get_minute_batch_gzip_response_when_enabled(monkeypatch):
     """开关开 + 客户端接受 gzip + 响应超阈值 → 返回 gzip Response, 解压后 JSON 完整。"""
     import gzip as gzip_mod
-    from app.api import kline as kline_api
+
     from fastapi import Response
+
+    from app.api import kline as kline_api
 
     mock_request, _ = _compress_mock_env(monkeypatch, compress_on=True)
     result = kline_api.get_minute_batch(
@@ -1259,8 +1261,9 @@ def test_get_minute_batch_gzip_response_when_enabled(monkeypatch):
 
 def test_get_minute_batch_plain_when_disabled(monkeypatch):
     """开关关 → 不压缩, 返回 JSON bytes 的未压缩 Response (无 Content-Encoding)。"""
-    from app.api import kline as kline_api
     from fastapi import Response
+
+    from app.api import kline as kline_api
 
     mock_request, _ = _compress_mock_env(monkeypatch, compress_on=False)
     result = kline_api.get_minute_batch(
@@ -1291,7 +1294,6 @@ def test_get_minute_batch_plain_without_accept_encoding(monkeypatch):
 
 def _daily_mock_env(monkeypatch, *, compress_on, accept="gzip, deflate"):
     """构造 get_daily_batch 压缩路径的最小 mock。"""
-    from app.api import kline as kline_api
     from app.services import preferences as prefs
 
     monkeypatch.setattr(prefs, "get_daily_batch_compress", lambda: compress_on)
@@ -1318,8 +1320,10 @@ def test_daily_batch_gzip_when_enabled(monkeypatch):
     """日K压缩开 + 接受 gzip → 压缩 Response, 解压 JSON 完整。"""
     import gzip as gzip_mod
     import json as json_mod
-    from app.api import kline as kline_api
+
     from fastapi import Response
+
+    from app.api import kline as kline_api
 
     req = _daily_mock_env(monkeypatch, compress_on=True)
     result = kline_api.get_daily_batch(req, {"symbols": ["600519.SH"], "days": 20})
@@ -1344,9 +1348,11 @@ def test_daily_batch_plain_when_disabled(monkeypatch):
 def test_daily_batch_independent_from_minute_switch(monkeypatch):
     """日K与分时独立: 分时关、日K开 → 日K仍压缩 (helper 按 pref_key 走各自 getter)。"""
     import gzip as gzip_mod
+
+    from fastapi import Response
+
     from app.api import kline as kline_api
     from app.services import preferences as prefs
-    from fastapi import Response
 
     monkeypatch.setattr(prefs, "get_minute_batch_compress", lambda: False)
     req = _daily_mock_env(monkeypatch, compress_on=True)
@@ -1361,6 +1367,7 @@ def test_preferences_parallel_saves_do_not_lose_each_other(tmp_path, monkeypatch
     后写者会把先写者的更新覆盖掉。
     """
     import threading
+
     from app.services import preferences as prefs
 
     monkeypatch.setattr(prefs, "_path", lambda: tmp_path / "preferences.json")

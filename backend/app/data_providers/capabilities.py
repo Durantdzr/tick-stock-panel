@@ -110,13 +110,19 @@ def _tier_base(tier: str) -> str:
 
 
 def _declared_sources() -> list[dict]:
-    """插件 + 自定义源 → 统一能力声明视图。未注册 (hidden/加载失败) 的源不会出现。"""
+    """插件 + 自定义源 → 统一能力声明视图。未注册 (hidden/加载失败) 的源不会出现。
+
+    asset_types: 可选市场限定声明 (如 binance 声明 ["crypto"])。声明了
+    asset_types 的源不进入 A 股 7 能力路由候选 (市场专用源, 防止把
+    A 股日K误路由到币安); 未声明视为通用 A 股源, 行为与既有插件一致。
+    """
     rows: list[dict] = []
     for plugin in custom_sources.list_plugins():
         rows.append({
             "name": plugin["name"],
             "display": plugin.get("display_name") or plugin["name"],
             "datasets": set(plugin.get("datasets") or []),
+            "asset_types": set(plugin.get("asset_types") or []),
             "available": bool(plugin.get("available")),
             "status": str(plugin.get("status") or ""),
             "kind": "plugin",
@@ -126,6 +132,7 @@ def _declared_sources() -> list[dict]:
             "name": source["name"],
             "display": source.get("display_name") or source["name"],
             "datasets": set(source.get("datasets") or []),
+            "asset_types": set(source.get("asset_types") or []),
             # 自定义源注册即已通过加载校验, 视为可用
             "available": True,
             "status": "ok",
@@ -171,6 +178,8 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
         for s in sources:
             if cap["id"] not in s["datasets"]:
                 continue
+            if s.get("asset_types"):
+                continue  # 市场专用源 (如 crypto) 不进 A 股能力候选
             entry = {
                 "name": s["name"],
                 "display": s["display"],
@@ -251,7 +260,7 @@ def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
         provider_names = {"tickflow"} if tf_available else set()
         provider_names |= {
             s["name"] for s in sources
-            if cap["id"] in s["datasets"] and s["available"]
+            if cap["id"] in s["datasets"] and s["available"] and not s.get("asset_types")
         }
         rows.append({
             "id": cap["id"],

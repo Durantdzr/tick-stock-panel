@@ -696,6 +696,8 @@ def get_preferences() -> dict:
         "nav_order": preferences.get_nav_order(),
         "nav_hidden": preferences.get_nav_hidden(),
         "dashboard_layout": preferences.get_dashboard_layout(),
+        "dashboard_layout_crypto": preferences.get_dashboard_layout_market("crypto"),
+        "dashboard_market": preferences.get_dashboard_market(),
         "screener_auto_run": preferences.get_screener_auto_run(),
         "assistant_auto_approve_actions": preferences.get_assistant_auto_approve_actions(),
         "assistant_mask_enabled": preferences.get_assistant_mask_enabled(),
@@ -1051,8 +1053,9 @@ def update_nav_hidden(req: NavHiddenIn) -> dict:
 
 
 class DashboardLayoutIn(BaseModel):
-    """看板自定义布局; layout=null 恢复默认。"""
+    """看板自定义布局; layout=null 恢复默认。market 指定目标市场 (默认 stock 兼容旧客户端)。"""
     layout: dict | None = None
+    market: str = "stock"
 
 
 @router.put("/preferences/dashboard-layout")
@@ -1060,10 +1063,26 @@ def update_dashboard_layout(req: DashboardLayoutIn) -> dict:
     """保存看板自定义布局(网格 blob); null = 清除回默认布局。"""
     from app.services import preferences
     try:
-        saved = preferences.set_dashboard_layout(req.layout)
+        saved = preferences.set_dashboard_layout_market(req.market, req.layout)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"dashboard_layout": saved}
+
+
+class DashboardMarketIn(BaseModel):
+    """主界面当前市场切换 (stock / crypto)。"""
+    market: str
+
+
+@router.put("/preferences/dashboard-market")
+def update_dashboard_market(req: DashboardMarketIn) -> dict:
+    """保存主界面当前市场 (看板按市场完全切换, 布局分市场存储)。"""
+    from app.services import preferences
+    try:
+        saved = preferences.set_dashboard_market(req.market)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"dashboard_market": saved}
 
 
 @router.put("/preferences/watchlist-columns")

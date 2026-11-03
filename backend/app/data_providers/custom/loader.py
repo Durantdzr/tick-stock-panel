@@ -584,6 +584,8 @@ def _manifest_status(manifest, available, reason, origin="builtin"):
         "origin": origin,
         "display_name": manifest.get("display_name", name),
         "datasets": list(manifest.get("datasets", []) or []),
+        # 市场限定声明 (可选): 如 ["crypto"] 表示专用市场源, 不进 A 股能力路由候选
+        "asset_types": list(manifest.get("asset_types", []) or []),
         "runtime": runtime,
         "available": available,
         "status": reason,

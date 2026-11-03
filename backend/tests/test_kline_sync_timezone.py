@@ -59,6 +59,9 @@ def _capture_minute_window(monkeypatch, tmp_path, local_dt: datetime, **kwargs) 
         return pl.DataFrame()
 
     monkeypatch.setattr(kline_sync.preferences, "get_minute_data_provider", lambda: "tickflow")
+    # _selected_minute_provider_name 会读真实 preferences.json 对比失效源,
+    # 本机路由过自定义分钟源时会提前 return, 必须一并 stub (测试隔离)。
+    monkeypatch.setattr(kline_sync, "_selected_minute_provider_name", lambda: "tickflow")
     monkeypatch.setattr(kline_sync.preferences, "get_minute_sync_segment_days", lambda: 20)
     monkeypatch.setattr(kline_sync, "_cleanup_null_datetime_minute", lambda repo: None)
     monkeypatch.setattr(kline_sync, "_migrate_symbol_to_date_partition", lambda repo: None)

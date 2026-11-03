@@ -361,6 +361,21 @@ def get_financial_provider() -> str:
     return _validated_provider(provider, "financial_data_provider")
 
 
+# ===== 加密货币 (crypto) 数据源 =====
+# crypto 是独立市场专用源 (如 binance), 不进入 A 股 7 能力路由;
+# 非法值回退 binance 并告警 (fail-closed 语义同上)。
+
+def get_crypto_data_provider() -> str:
+    provider = str(load().get("crypto_data_provider", "binance") or "binance").lower()
+    allowed = _allowed_data_providers()
+    if provider in allowed:
+        return provider
+    logger.warning(
+        "数据源偏好 crypto_data_provider=%r 不在可用列表 %s, 回退 binance",
+        provider, sorted(allowed))
+    return "binance"
+
+
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
 
 def get_pipeline_pull_a_share() -> bool:
@@ -1349,13 +1364,41 @@ def _clamp_int(v: object, lo: int, hi: int, fallback: int) -> int:
 
 
 def set_dashboard_layout(value: dict | None) -> dict | None:
-    """保存看板布局; None = 清除(回默认布局)。
+    """保存看板布局(A股); None = 清除(回默认布局)。
 
     护栏: items 数量、字段类型/取值范围、整体 JSON 体积;
     前端渲染前还会再做一轮规范化(未知组件剔除等), 此处只防脏数据写盘。
     """
+    return set_dashboard_layout_market("stock", value)
+
+
+# 主界面市场切换: 布局/当前市场按资产类型分键存储 (crypto 布局独立于 A 股)
+_LAYOUT_BLOB_KEYS = {"stock": "dashboard_layout", "crypto": "dashboard_layout_crypto"}
+_DASHBOARD_MARKET_DEFAULT = "stock"
+
+
+def get_dashboard_layout_market(market: str) -> dict | None:
+    """按市场读取看板布局 blob; 未知市场抛 ValueError (fail-closed)。"""
+    key = _LAYOUT_BLOB_KEYS.get(market)
+    if key is None:
+        raise ValueError(f"未知市场: {market!r} (可选: {', '.join(_LAYOUT_BLOB_KEYS)})")
+    raw = load().get(key)
+    return raw if isinstance(raw, dict) else None
+
+
+def set_dashboard_layout_market(market: str, value: dict | None) -> dict | None:
+    """按市场保存看板布局; None = 清除该市场布局(回默认)。护栏与 stock 版一致。"""
+    key = _LAYOUT_BLOB_KEYS.get(market)
+    if key is None:
+        raise ValueError(f"未知市场: {market!r} (可选: {', '.join(_LAYOUT_BLOB_KEYS)})")
+    blob = _validated_layout_blob(value)
+    save({key: blob})
+    return blob
+
+
+def _validated_layout_blob(value: dict | None) -> dict | None:
+    """布局 blob 消毒: items 数量、字段类型/取值范围、整体 JSON 体积。"""
     if value is None:
-        save({"dashboard_layout": None})
         return None
     items = value.get("items") if isinstance(value, dict) else None
     if not isinstance(items, list) or not items:
@@ -1382,8 +1425,21 @@ def set_dashboard_layout(value: dict | None) -> dict | None:
     blob = {"v": 1, "items": cleaned}
     if len(json.dumps(blob, ensure_ascii=False)) > _DASHBOARD_LAYOUT_MAX_JSON:
         raise ValueError("布局数据过大 (>64KB)")
-    save({"dashboard_layout": blob})
     return blob
+
+
+def get_dashboard_market() -> str:
+    """主界面当前市场 (dashboard 市场切换持久化); 非法值回退 stock。"""
+    value = load().get("dashboard_market")
+    return value if value in _LAYOUT_BLOB_KEYS else _DASHBOARD_MARKET_DEFAULT
+
+
+def set_dashboard_market(value: str) -> str:
+    """保存主界面当前市场。"""
+    if value not in _LAYOUT_BLOB_KEYS:
+        raise ValueError(f"未知市场: {value!r} (可选: {', '.join(_LAYOUT_BLOB_KEYS)})")
+    save({"dashboard_market": value})
+    return value
 
 
 # ---------------------------------------------------------------------------

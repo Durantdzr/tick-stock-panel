@@ -8,8 +8,8 @@ import { api } from '@/lib/api'
 const INPUT_CLS = 'h-8 w-full rounded-input border border-border bg-surface px-2.5 text-xs text-foreground focus:border-accent focus:outline-none'
 
 /** 渲染与挖掘发布同构的单因子排名策略源码 (FactorRankResearchMatrixStrategy)。 */
-function renderStrategyCode(strategyId: string, name: string, factorId: string, direction: 'high' | 'low', description: string): string {
-  const assetTypes = '["stock"]'
+function renderStrategyCode(strategyId: string, name: string, factorId: string, direction: 'high' | 'low', description: string, factorAssetTypes?: string[]): string {
+  const assetTypes = JSON.stringify(factorAssetTypes?.length ? factorAssetTypes : ['stock'])
   return `"""${name}: 由因子库一键生成的单因子排名策略。"""
 from app.strategy.research.factor_rank_research import FactorRankResearchMatrixStrategy
 
@@ -47,7 +47,7 @@ MATRIX_STRATEGY = FactorRankResearchMatrixStrategy(SCORING, DIRECTIONS)
 export function GenerateFactorStrategyDialog({
   item, onClose,
 }: {
-  item: { id: string; label: string; group: string; direction?: 'high' | 'low' | 'none' }
+  item: { id: string; label: string; group: string; direction?: 'high' | 'low' | 'none'; asset_types?: string[] }
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
@@ -64,7 +64,7 @@ export function GenerateFactorStrategyDialog({
         try {
           return await api.strategySaveCodeV2({
             strategy_id: strategyId,
-            code: renderStrategyCode(strategyId, name.trim(), item.id, direction, description),
+            code: renderStrategyCode(strategyId, name.trim(), item.id, direction, description, item.asset_types),
             target_source: 'custom',
             mode: 'create',
             name: name.trim(),

@@ -9,7 +9,7 @@ from datetime import date
 from typing import Any
 
 import polars as pl
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.services.ext_data import ExtConfig, ExtConfigStore
 from app.services.index_const import CORE_INDEX_NAMES, CORE_INDEX_SYMBOLS
@@ -360,17 +360,32 @@ def _build_overview(request: Request, as_of: date | None = None) -> dict:
 
 
 @router.get("/market")
-def market_overview(request: Request, as_of: date | None = None):
-    """总览页单次请求聚合数据，避免前端拉全市场明细后再计算。"""
+def market_overview(request: Request, as_of: date | None = None, asset_type: str = "stock"):
+    """总览页单次请求聚合数据，避免前端拉全市场明细后再计算。
+
+    asset_type=crypto 走 crypto 专用装配 (币安 24hr 快照 + 本地 enriched 趋势,
+    见 services.crypto_overview), 缓存键与 A 股相互独立。
+    """
+    from app.services import trading_rules
+
+    if asset_type not in trading_rules.known_asset_types():
+        raise HTTPException(status_code=422, detail=f"未知的资产类型: {asset_type!r}")
+    if not trading_rules.is_feature_enabled(asset_type, "dashboard"):
+        raise HTTPException(status_code=404, detail=f"{asset_type} 市场暂无总览看板")
     global _cache, _cache_key, _cache_ts
     now = time.time()
-    cache_key = as_of.isoformat() if as_of else "latest"
+    cache_key = f"{asset_type}|{as_of.isoformat() if as_of else 'latest'}"
     # 读缓存持锁, 避免与 invalidate 的 clear 竞态读到撕裂状态
     with _cache_lock:
         if _cache is not None and _cache_key == cache_key and (now - _cache_ts) < _CACHE_TTL:
             return _cache
     # 装配在锁外进行 (耗时), 允许并发未命中时各自构建, 不长时间持锁串行化请求
-    data = _build_overview(request, as_of)
+    if asset_type == "crypto":
+        from app.services.crypto_overview import build_crypto_overview
+
+        data = build_crypto_overview(request.app.state.repo, as_of)
+    else:
+        data = _build_overview(request, as_of)
     with _cache_lock:
         _cache = data
         _cache_key = cache_key

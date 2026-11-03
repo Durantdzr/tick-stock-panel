@@ -1444,6 +1444,26 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
 
+    # 加密货币 (crypto) 每日同步: 7x24 市场, 每日 08:05 (UTC 日线收盘 = 北京 08:00
+    # 之后) 增量拉取白名单日K并重算 enriched。crypto 无交易日概念, 不用 mon-fri;
+    # 数据源不可用 (如 binance 网络受限) 时任务失败记录在日志与 /api/crypto/status。
+    def _crypto_sync_task():
+        from app.services import crypto_sync
+        result = crypto_sync.run_crypto_sync(repo)
+        if result.get("ok"):
+            logger.info("crypto 定时同步完成: %s", result)
+        else:
+            logger.warning("crypto 定时同步失败: %s", result)
+        return result
+
+    scheduler.add_job(
+        lambda: _run_tracked(_crypto_sync_task, "crypto_sync"),
+        trigger=CronTrigger(hour=8, minute=5, timezone="Asia/Shanghai"),
+        id="crypto_daily_sync",
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",
                 inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"],

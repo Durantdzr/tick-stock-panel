@@ -99,6 +99,14 @@ GOLDEN_COLUMNS: list[dict] = [
     {"id": "position_240d", "label": "一年价格位置", "group": "价格位置", "desc": "收盘价在近240个交易日最低价到最高价之间的位置 (0~1)"},
     {"id": "distance_to_high_240d", "label": "距一年高点", "group": "价格位置", "desc": "收盘价 / 240日最高收盘价 - 1, 接近0代表贴近一年新高"},
     {"id": "kdj_kd_diff", "label": "KDJ K-D差", "group": "趋势", "desc": "KDJ K值 - D值, 正值代表快线在慢线上方"},
+    # --- 扩充批次 (2026-11-02): 追加于目录尾部, 前 48 项挖掘调度顺序不变 ---
+    {"id": "sharpe_momentum_60d", "label": "风险调整动量(60日)", "group": "动量", "desc": "近60日日收益均值 / 日收益标准差 (滚动夏普动量), 收益与稳定性兼顾"},
+    {"id": "fip_20d", "label": "动量平滑度FIP(20日)", "group": "收益形态", "desc": "近20日下跌天数占比 - 上涨天数占比, 越负代表动量路径越平滑 (Da et al. 2014)"},
+    {"id": "gain_loss_ratio_20d", "label": "盈亏比(20日)", "group": "收益形态", "desc": "近20日平均上涨幅度 / 平均下跌幅度绝对值, 高值代表上行动能占优"},
+    {"id": "ret_kurt_20d", "label": "20日收益峰度", "group": "收益形态", "desc": "近20日日收益超额峰度, 高值代表尾部(极端涨跌)风险大"},
+    {"id": "drawdown_20d", "label": "20日回撤深度", "group": "价格位置", "desc": "收盘价 / 近20日最高收盘价 - 1, 接近0代表处于阶段高位"},
+    {"id": "ma_alignment_score", "label": "均线多头排列", "group": "趋势", "desc": "sign(收盘/MA-1) 对 MA5/10/20/30/60 求平均, [-1,1], 高值代表多头排列"},
+    {"id": "turnover_trend_5_60", "label": "换手率趋势(5/60)", "group": "流动性", "desc": "5日均换手率 / 60日均换手率 - 1, 高值代表交易拥挤度快速抬升"},
 ]
 
 GOLDEN_VIRTUAL_DEPS: dict[str, frozenset[str]] = {
@@ -153,6 +161,14 @@ GOLDEN_VIRTUAL_DEPS: dict[str, frozenset[str]] = {
     "position_240d": frozenset({"close"}),
     "distance_to_high_240d": frozenset({"close"}),
     "kdj_kd_diff": frozenset({"kdj_k", "kdj_d"}),
+    # --- 扩充批次 (2026-11-02) ---
+    "sharpe_momentum_60d": frozenset({"close"}),
+    "fip_20d": frozenset({"close"}),
+    "gain_loss_ratio_20d": frozenset({"close"}),
+    "ret_kurt_20d": frozenset({"close"}),
+    "drawdown_20d": frozenset({"close"}),
+    "ma_alignment_score": frozenset({"close", "ma5", "ma10", "ma20", "ma30", "ma60"}),
+    "turnover_trend_5_60": frozenset({"turnover_rate"}),
 }
 
 GOLDEN_WARMUP: dict[str, int] = {
@@ -182,6 +198,13 @@ GOLDEN_WARMUP: dict[str, int] = {
     "turnover_std_20d": 21,
     "position_240d": 241,
     "distance_to_high_240d": 241,
+    # --- 扩充批次 (2026-11-02) ---
+    "sharpe_momentum_60d": 61,
+    "fip_20d": 21,
+    "gain_loss_ratio_20d": 21,
+    "ret_kurt_20d": 21,
+    "drawdown_20d": 21,
+    "turnover_trend_5_60": 60,
 }
 
 @pytest.fixture(autouse=True)
@@ -230,10 +253,10 @@ def test_scoring_warmup_snapshot() -> None:
 
 def test_catalog_counts_and_kinds() -> None:
     specs = all_factors()
-    assert len(specs) == 77
-    assert len({spec.id for spec in specs}) == 77  # id 唯一
+    assert len(specs) == 84
+    assert len({spec.id for spec in specs}) == 84  # id 唯一
     virtual = [spec for spec in specs if spec.kind == "virtual"]
-    assert len(virtual) == 52  # ma/ema 10 + 原有 26 + 扩充批次 16
+    assert len(virtual) == 59  # ma/ema 10 + 原有 26 + 2026-09-05 批次 16 + 2026-11-02 批次 7
     financial = [spec for spec in specs if spec.pit]
     assert len(financial) == 7
     assert all(spec.pit_source == "financial_announce" for spec in financial)
@@ -261,8 +284,8 @@ def test_get_factor_and_dependencies() -> None:
 def test_asset_type_filter() -> None:
     stock = all_factors(asset_type="stock")
     etf = all_factors(asset_type="etf")
-    assert len(stock) == 77
-    assert len(etf) == 70  # 财务 7 项仅股票
+    assert len(stock) == 84
+    assert len(etf) == 77  # 财务 7 项仅股票
 
 
 def test_register_factor_rejects_duplicate() -> None:
@@ -309,12 +332,12 @@ def test_factors_api_contract() -> None:
     assert response.status_code == 200
     payload = response.json()
     factors = payload["factors"]
-    assert len(factors) == 77
+    assert len(factors) == 84
     first = factors[0]
     assert first["id"] == "momentum_5d"
     assert first["kind"] == "base"
     assert first["formula"] == "5个交易日累计收益率"
-    assert first["asset_types"] == ["etf", "stock"]
+    assert first["asset_types"] == ["crypto", "etf", "stock"]  # OHLCV 类因子三市场通用
     ma20 = next(item for item in factors if item["id"] == "ma20_bias")
     assert ma20["kind"] == "virtual"
     assert ma20["dependencies"] == ["close", "ma20"]
@@ -324,12 +347,17 @@ def test_factors_api_contract() -> None:
     mv = next(item for item in factors if item["id"] == "log_float_mv")
     assert mv["kind"] == "virtual"
     assert mv["scale_free"] is False
+    assert "crypto" not in mv["asset_types"]  # 依赖换手率, crypto 无股本口径
 
 
 def test_factors_api_asset_filter_and_validation() -> None:
     client = _client()
     etf = client.get("/api/factors", params={"asset_type": "etf"}).json()["factors"]
-    assert len(etf) == 70
+    assert len(etf) == 77  # 84 内置 - 7 项仅股票的财务因子
     assert all("stock" in item["asset_types"] for item in etf)
+    # crypto: 68 = 84 - 7 财务 - 8 换手率/涨停基因依赖 (crypto enriched 无该口径)
+    crypto = client.get("/api/factors", params={"asset_type": "crypto"}).json()["factors"]
+    assert len(crypto) == 68
+    assert all("crypto" in item["asset_types"] for item in crypto)
     # 非法资产类型 → 422 (fail-closed, 不静默回退全量)
     assert client.get("/api/factors", params={"asset_type": "index"}).status_code == 422

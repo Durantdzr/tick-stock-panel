@@ -32,7 +32,11 @@ export const QK = {
   capabilityMatrix: ['capability-matrix'] as const,
   quoteStatus:    ['quote-status'] as const,
   quoteInterval:  ['quote-interval'] as const,
-  overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
+  overviewMarket: (asOf?: string, assetType?: string) =>
+    ['overview-market', asOf ?? 'latest', assetType ?? 'stock'] as const,
+  marketRules:      ['market-rules'] as const,
+  infoNews:         (assetType?: string) => ['info-news', assetType ?? 'stock'] as const,
+  infoSentiment:    (assetType?: string) => ['info-sentiment', assetType ?? 'crypto'] as const,
   indexQuotes:    ['index-quotes'] as const,
 
   // Watchlist
@@ -91,7 +95,7 @@ export const QK = {
   guardianRuns:         ['backtest-guardian-runs'] as const,
   labReport:            ['backtest-lab-report'] as const,
   researchCandidates:  ['research-candidates'] as const,
-  strategyLinkOptions: (assetType?: 'stock' | 'etf') => assetType
+  strategyLinkOptions: (assetType?: 'stock' | 'etf' | 'crypto') => assetType
     ? ['strategy-link-options', assetType] as const
     : ['strategy-link-options'] as const,
   strategyDetail:       (id: string) => ['strategy-detail', id] as const,

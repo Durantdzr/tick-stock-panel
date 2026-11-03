@@ -279,6 +279,14 @@ def list_rules(request: Request):
 def save_rule(req: RuleModel, request: Request):
     rule = monitor_rules.normalize(req.model_dump())
     rule = _reconcile_index_asset_type(rule, request.app.state.repo)
+    # 交易规则注册表守卫: 实时监控相位机为 A 股语义, crypto 等 7×24 市场 fail-closed
+    from app.services import trading_rules
+
+    if not trading_rules.is_feature_enabled(str(rule.get("asset_type") or "stock"), "realtime_monitor"):
+        raise HTTPException(
+            status_code=400,
+            detail=trading_rules.deny_reason(str(rule.get("asset_type") or "stock"), "realtime_monitor"),
+        )
     # 连板梯队封单监控 (type=ladder) 依赖五档盘口数据, 需 Pro+ (DEPTH5_BATCH 能力)。
     # 无能力时拒绝创建, 避免规则存了却永远无法触发。
     if rule.get("type") == "ladder":

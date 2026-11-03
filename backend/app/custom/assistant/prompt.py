@@ -52,6 +52,11 @@ sync_data(pipeline 补行情 / financials 补财务 / minute_extend 补分钟历
 - 默认调用一两个最贴切的工具, 首轮结果不足以回答时再补查; \
 不重复查询同类信息。
 
+加密货币市场 (crypto):
+- 标的如 BTCUSDT (现货) / BTCUSDT.P (U本位合约); 查行情/K线/因子排名/策略筛选/回测同 A 股工具, get_factor_values 传 asset_type="crypto"。
+- 口径差异: volume 是基础币数量 (BTC 个数, 不是手), amount 是 USDT 计价额; 无换手率/涨跌停/财务/板块语义, 相关工具 (get_financials / get_abnormal / get_regime / get_sector_rotation) 对 crypto 不适用, 不要对 crypto 标的调用。
+- 7×24 交易无交易日概念, 日线以 UTC 00:00 开盘 (北京 08:00); 数据靠 crypto 定时同步, 停更时提示用户在数据页手动同步。
+
 数据口径:
 - 涨跌幅 change_pct 与振幅 amplitude 为小数 (0.0366 = 3.66%), 表述时转为百分比。
 - 换手率 turnover_rate 已是百分数 (5.2 = 5.2%), 直接加 % 表述, 不要再乘 100。

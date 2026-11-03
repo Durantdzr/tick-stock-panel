@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/factors", tags=["factors"])
 
 
 @router.get("")
-def list_factors(request: Request, asset_type: str | None = Query(default=None, pattern="^(stock|etf)$")) -> dict:
+def list_factors(request: Request, asset_type: str | None = Query(default=None, pattern="^(stock|etf|crypto)$")) -> dict:
     """注册表因子列表; asset_type 过滤适用资产 (财务因子仅股票)。
 
     附带生命周期 status (draft/active/watch/retired, 仅盘上定义的自定义/复合
@@ -86,7 +86,7 @@ def validate_formula(req: FormulaValidateRequest) -> dict:
 
 
 class FormulaTrialRequest(FormulaValidateRequest):
-    asset_type: str = Field(default="stock", pattern="^(stock|etf)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|etf|crypto)$")
     days: int = Field(default=40, ge=20, le=120)
 
 
@@ -214,6 +214,8 @@ class CustomFactorCreateRequest(BaseModel):
     formula: str = Field(..., min_length=1, max_length=2000)
     description: str = Field(default="", max_length=500)
     direction: str = Field(default="none", pattern="^(high|low|none)$")
+    # 保存试算的资产口径 (自定义因子本身资产无关, 试算需有数据的列)
+    asset_type: str = Field(default="stock", pattern="^(stock|etf|crypto)$")
 
 
 class CompositeFactorCreateRequest(BaseModel):
@@ -300,7 +302,7 @@ def create_custom_factor(req: CustomFactorCreateRequest, request: Request) -> di
         store.to_spec(definition)  # 先做 schema/id/编译校验
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _trial_nonempty(request, req.formula)
+    _trial_nonempty(request, req.formula, asset_type=req.asset_type)
     try:
         store.register_definition(definition)
     except ValueError as exc:
@@ -341,6 +343,7 @@ class CustomFactorUpdateRequest(BaseModel):
     formula: str = Field(..., min_length=1, max_length=2000)
     description: str = Field(default="", max_length=500)
     direction: str = Field(default="none", pattern="^(high|low|none)$")
+    asset_type: str = Field(default="stock", pattern="^(stock|etf|crypto)$")
 
 
 @router.post("/custom/{factor_id}/update")
@@ -361,7 +364,7 @@ def update_custom_factor(factor_id: str, req: CustomFactorUpdateRequest, request
         raise HTTPException(status_code=400, detail=f"仅自定义因子支持公式编辑 (kind={target.get('kind')})")
     formula_changed = str(target.get("formula")) != req.formula
     if formula_changed:
-        _trial_nonempty(request, req.formula)
+        _trial_nonempty(request, req.formula, asset_type=req.asset_type)
     target.update({
         "label": req.label,
         "group": req.group,

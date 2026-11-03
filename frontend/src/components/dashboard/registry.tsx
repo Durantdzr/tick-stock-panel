@@ -8,13 +8,15 @@ import type { CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
-import type { AlertEvent, OverviewMarket } from '@/lib/api'
+import { ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Link2, Newspaper, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat, Waves } from 'lucide-react'
+import type { AlertEvent, DashboardMarket, MarketFeatureKey, OverviewMarket } from '@/lib/api'
 import { fmtBigNum } from '@/lib/format'
 import type { DimensionMembersTarget } from '@/components/DimensionMembersDialog'
 import { SealedBadge } from '@/components/SealedBadge'
 import { scoreColor, fmtPrice, fmtStockPct, pctClass, compactCount, SectionTitle, MiniMetric, KpiCell } from './shared'
 import { EmotionScoreConfigDialog } from './EmotionScoreConfigDialog'
+import { NewsCard } from './NewsWidget'
+import { SentimentCard } from './SentimentWidget'
 import {
   IndexTicker, BreadthBar, DistributionBars, EmotionRadar, LadderMini, StockList, HotRankCard, MonitorWidget,
   stockListNav, rankNav,
@@ -24,6 +26,8 @@ import { ExternalLinkWidget } from './ExternalLinkWidget'
 
 /** 渲染上下文: 数据切片与交互回调(由 Dashboard 页提供, 组件不自取数据) */
 export interface WidgetCtx {
+  /** 当前看板市场 (crypto 总览的空态维度由组件按此分流渲染) */
+  market: DashboardMarket
   data: OverviewMarket
   score: number
   hasDepth: boolean
@@ -46,6 +50,10 @@ export interface WidgetDef {
   defW: number
   defH: number
   render: (ctx: WidgetCtx, item: DashboardItem) => ReactNode
+  /** 适用市场; 缺省 = 所有市场可见。绑定 A 股交易规则语义的组件显式声明 ['stock'] */
+  markets?: DashboardMarket[]
+  /** 对应交易规则注册表 feature 键 (/api/markets/rules); 后端关闭该功能时组件隐藏 */
+  feature?: MarketFeatureKey
 }
 
 function sectionCard(children: ReactNode, opts: { className?: string; style?: CSSProperties } = {}): ReactNode {
@@ -74,7 +82,7 @@ function EmotionRadarCard({ ctx }: { ctx: WidgetCtx }) {
             onConfig={() => setConfigOpen(true)}
             configTitle="配置情绪评分的计算方式"
           />
-          <EmotionRadar radar={ctx.data.radar} score={ctx.score} />
+          <EmotionRadar radar={ctx.data.radar ?? []} score={ctx.score} />
         </>,
         { style: { borderColor: `${scoreColor(ctx.score)}40` } },
       )}
@@ -87,6 +95,17 @@ function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
   const { data, hasDepth, isSealedDegrade, sealedReady } = ctx
   const strongUp = data.breadth.strong_up ?? 0
   const strongDown = data.breadth.strong_down ?? 0
+  if (data.market === 'crypto') {
+    // crypto 无涨跌停/换手率口径: 只渲染有意义的广度与成交额指标 (24h 滚动口径)
+    return (
+      <div className="grid h-full grid-cols-2 gap-1 xl:grid-cols-4">
+        <KpiCell label="涨 / 平 / 跌" value={<><span className="text-bull">{data.breadth.up}</span><span className="text-muted">/</span><span className="text-muted">{data.breadth.flat}</span><span className="text-muted">/</span><span className="text-bear">{data.breadth.down}</span></>} sub={`上涨率 ${data.breadth.up_pct.toFixed(1)}%`} />
+        <KpiCell label="强势 / 弱势" value={<><span className="text-bull">{strongUp}</span><span className="text-muted">/</span><span className="text-bear">{strongDown}</span></>} sub="24h 涨跌 ≥3%" />
+        <KpiCell label="全市场成交额" value={fmtBigNum(data.amount.total)} sub={`均额 ${fmtBigNum(data.amount.avg)}`} />
+        <KpiCell label="平均 / 中位涨跌" value={fmtStockPct(data.breadth.avg_pct ?? 0)} sub={`中位 ${fmtStockPct(data.breadth.median_pct ?? 0)}`} tone="accent" />
+      </div>
+    )
+  }
   return (
     <div className="grid h-full grid-cols-3 gap-1 xl:grid-cols-6">
       <KpiCell label="个股涨 / 平 / 跌" value={<><span className="text-bull">{data.breadth.up}</span><span className="text-muted">/</span><span className="text-muted">{data.breadth.flat}</span><span className="text-muted">/</span><span className="text-bear">{data.breadth.down}</span></>} sub={`上涨率 ${data.breadth.up_pct.toFixed(1)}%`} />
@@ -106,10 +125,11 @@ function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
 
 function TrendWidget({ ctx }: { ctx: WidgetCtx }) {
   const { data } = ctx
+  const isCrypto = data.market === 'crypto'
   return (
     <div className="flex h-full flex-col">
       <div>
-        <SectionTitle icon={LineChart} title="趋势强度" hint="均线/新高低" />
+        <SectionTitle icon={LineChart} title="趋势强度" hint={isCrypto ? '均线/新高低 (白名单)' : '均线/新高低'} />
         <div className="grid grid-cols-3 gap-1.5">
           <MiniMetric label="站上MA5" value={`${data.trend.above_ma5_pct.toFixed(0)}%`} cls="text-accent" />
           <MiniMetric label="站上MA20" value={`${data.trend.above_ma20_pct.toFixed(0)}%`} cls="text-accent" />
@@ -119,17 +139,19 @@ function TrendWidget({ ctx }: { ctx: WidgetCtx }) {
           <MiniMetric label="高低比" value={`${data.trend.new_high + data.trend.new_low > 0 ? Math.round(data.trend.new_high / (data.trend.new_high + data.trend.new_low) * 100) : 50}%`} cls={data.trend.new_high >= data.trend.new_low ? 'text-bull' : 'text-bear'} />
         </div>
       </div>
-      <div className="mt-1.5 border-t border-border pt-1.5">
-        <SectionTitle icon={Target} title="实用监控" hint="盘中观察" />
-        <div className="grid grid-cols-3 gap-1.5">
-          <MiniMetric label="炸板" value={`${data.limit.broken ?? 0}`} cls="text-warning" />
-          <MiniMetric label="跌停" value={`${data.limit.limit_down ?? 0}`} cls="text-bear" />
-          <MiniMetric label="站上MA60" value={`${data.trend.above_ma60_pct.toFixed(0)}%`} cls="text-accent" />
-          <MiniMetric label="新高/新低" value={`${compactCount(data.trend.new_high)}/${compactCount(data.trend.new_low)}`} cls={data.trend.new_high >= data.trend.new_low ? 'text-bull' : 'text-bear'} />
-          <MiniMetric label="高换手数" value={`${data.activity.high_turnover}`} cls="text-accent" />
-          <MiniMetric label="放量占比" value={`${fmtPrice(data.activity.high_vol_ratio, 1)}%`} cls="text-accent" />
+      {!isCrypto && (
+        <div className="mt-1.5 border-t border-border pt-1.5">
+          <SectionTitle icon={Target} title="实用监控" hint="盘中观察" />
+          <div className="grid grid-cols-3 gap-1.5">
+            <MiniMetric label="炸板" value={`${data.limit.broken ?? 0}`} cls="text-warning" />
+            <MiniMetric label="跌停" value={`${data.limit.limit_down ?? 0}`} cls="text-bear" />
+            <MiniMetric label="站上MA60" value={`${data.trend.above_ma60_pct.toFixed(0)}%`} cls="text-accent" />
+            <MiniMetric label="新高/新低" value={`${compactCount(data.trend.new_high)}/${compactCount(data.trend.new_low)}`} cls={data.trend.new_high >= data.trend.new_low ? 'text-bull' : 'text-bear'} />
+            <MiniMetric label="高换手数" value={`${data.activity.high_turnover}`} cls="text-accent" />
+            <MiniMetric label="放量占比" value={`${fmtPrice(data.activity.high_vol_ratio, 1)}%`} cls="text-accent" />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -190,6 +212,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'radar', label: '情绪雷达', icon: Sparkles, minW: 3, minH: 7, defW: 4, defH: 8,
+    markets: ['stock'],
     render: ctx => <EmotionRadarCard ctx={ctx} />,
   },
   {
@@ -198,6 +221,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'concept-rank', label: '概念热度', icon: Flame, minW: 3, minH: 6, defW: 6, defH: 8,
+    markets: ['stock'],
     render: ctx => (
       <HotRankCard title="概念热度" rank={ctx.data.concept_rank} configUrl="/concept-analysis"
         activeSymbol={ctx.activeSymbol('concept')}
@@ -207,6 +231,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'industry-rank', label: '行业热度', icon: Flame, minW: 3, minH: 6, defW: 6, defH: 8,
+    markets: ['stock'],
     render: ctx => (
       <HotRankCard title="行业热度" rank={ctx.data.industry_rank} configUrl="/industry-analysis"
         activeSymbol={ctx.activeSymbol('industry')}
@@ -240,6 +265,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'activity', label: '活跃换手', icon: Repeat, minW: 2, minH: 7, defW: 3, defH: 10,
+    markets: ['stock'],  // crypto 无换手率口径
     render: ctx => (
       <StockList title="活跃换手" rows={ctx.data.active_leaders} mode="active"
         activeSymbol={ctx.activeSymbol('active')}
@@ -248,6 +274,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'ladder', label: '涨停梯队', icon: Flame, minW: 3, minH: 6, defW: 4, defH: 8,
+    markets: ['stock'],  // crypto 无涨跌停 (交易规则注册表 limit_ladder 未开放)
     render: ctx => sectionCard(
       <>
         <SectionTitle icon={Flame} title="涨停梯队" hint={<span className="inline-flex items-center gap-1">{`涨停 ${ctx.data.limit.limit_up}`}{ctx.isSealedDegrade && <span className="text-[9px] px-1 rounded bg-yellow-500/10 text-yellow-600 dark:text-yellow-500">{ctx.hasDepth ? '未修正' : '降级'}</span>}</span>} />
@@ -257,7 +284,19 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'monitor', label: '监控中心', icon: BellRing, minW: 2, minH: 6, defW: 4, defH: 10,
+    markets: ['stock'],  // 相位机为 A 股语义, crypto 下后端 fail-closed (realtime_monitor 未开放)
     render: ctx => <MonitorSection ctx={ctx} />,
+  },
+  {
+    id: 'news', label: '市场资讯', icon: Newspaper, minW: 2, minH: 6, defW: 4, defH: 10,
+    feature: 'news',
+    render: ctx => <NewsCard assetType={ctx.market} />,
+  },
+  {
+    id: 'sentiment', label: '外部市场情绪', icon: Waves, minW: 3, minH: 6, defW: 4, defH: 10,
+    markets: ['crypto'],  // 恐惧贪婪/资金费率为 crypto 决策辅助; A 股情绪在「情绪雷达」
+    feature: 'market_sentiment',
+    render: () => <SentimentCard assetType="crypto" />,
   },
   {
     id: 'ext-link', label: '外部链接', icon: Link2, minW: 2, minH: 5, defW: 6, defH: 10,
@@ -298,3 +337,28 @@ export const DEFAULT_LAYOUT: DashboardItem[] = [
   { i: 'turnover', t: 'turnover', x: 4, y: 21, w: 2, h: 13 },
   { i: 'activity', t: 'activity', x: 6, y: 21, w: 2, h: 13 },
 ]
+
+/** crypto 默认布局 — 只含 crypto 有口径的组件 (交易规则注册表边界);
+ * 外部情绪(恐惧贪婪/资金费率)与市场资讯为 crypto 决策辅助主力。 */
+export const DEFAULT_LAYOUT_CRYPTO: DashboardItem[] = [
+  { i: 'indices', t: 'indices', x: 0, y: 0, w: 12, h: 2 },
+  { i: 'kpi', t: 'kpi', x: 0, y: 2, w: 12, h: 2 },
+  { i: 'distribution', t: 'distribution', x: 0, y: 4, w: 3, h: 8 },
+  { i: 'sentiment', t: 'sentiment', x: 3, y: 4, w: 3, h: 10 },
+  { i: 'trend', t: 'trend', x: 6, y: 4, w: 3, h: 8 },
+  { i: 'gainers', t: 'gainers', x: 9, y: 4, w: 3, h: 10 },
+  { i: 'losers', t: 'losers', x: 0, y: 12, w: 3, h: 10 },
+  { i: 'turnover', t: 'turnover', x: 3, y: 14, w: 3, h: 10 },
+  { i: 'news', t: 'news', x: 6, y: 14, w: 6, h: 12 },
+]
+
+/** 某市场可见的组件定义 (registry 静态 markets 声明; 后端规则 Feature 门控由 Dashboard 叠加) */
+export function widgetsForMarket(market: DashboardMarket): WidgetDef[] {
+  return WIDGET_DEFS.filter(d => !d.markets || d.markets.includes(market))
+}
+
+/** 组件是否可用于某市场 (含 unknown type 兜底: 不可见即不可用) */
+export function widgetVisibleIn(def: WidgetDef | undefined, market: DashboardMarket): boolean {
+  if (!def) return false
+  return !def.markets || def.markets.includes(market)
+}

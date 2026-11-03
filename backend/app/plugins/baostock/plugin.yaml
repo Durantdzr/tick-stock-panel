@@ -1,0 +1,19 @@
+# Baostock — 免费 A 股数据平台 (www.baostock.com)。
+# 纯 Python SDK, 匿名登录无需 Key; baostock 包已加入后端默认依赖。
+# 提供 adj_factor (除权因子) 与 financial (metrics 指标 + shares 股本),
+# 补齐免费档位下 TickFlow 无法提供的两项能力。
+
+name: baostock
+display_name: "Baostock"
+runtime: python
+entry: app.plugins.baostock.provider:BaostockProvider
+check: app.plugins.baostock.provider:availability
+datasets: [adj_factor, financial]
+description: "Baostock 免费数据平台(匿名登录, 无需 Key)。除权因子(涨跌幅复权累积链换算单事件比值) + 财务季度指标(五类, 含公告日期) + 历史股本(总股本/流通股); 无三大报表科目与分钟数据, 自动回退。"
+usage_notes:
+  - "除权因子: 涨跌幅复权法累积因子换算为单事件比值, 口径为价格连续性比(不含分红再投资收益成分), 与 fuyao 交易所公式推导基本一致"
+  - "财务指标: 盈利/成长/偿债/营运/现金流五类季度数据, 带 pubDate 公告日期(防未来函数)"
+  - "股本: 按报告期+公告日的总股本/流通股, 供历史换手率计算"
+  - "全查询串行化(baostock SDK 单连接非线程安全), 全市场除权因子首轮约 5 分钟"
+install_hint: "依赖已内置(baostock), 无需 Key; 不可用时检查网络(登录服务器 www.baostock.com)"
+homepage: "https://www.baostock.com"

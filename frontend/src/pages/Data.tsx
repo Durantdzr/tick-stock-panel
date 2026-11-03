@@ -49,6 +49,7 @@ import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { DataIntegrityPanel } from '@/components/data/DataIntegrityPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
 import { FinancialSyncPanel } from '@/components/data/FinancialSyncPanel'
+import { CryptoSyncConfig } from '@/components/data/CryptoSyncConfig'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { AdjFactorSyncConfig } from '@/components/data/AdjFactorSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
@@ -536,6 +537,25 @@ export function Data() {
               { label: '指标', table: 'etf_enriched' },
             ] as FieldTab[]}
             onShowFields={(t) => setSchemaTable(t ?? 'etf_daily')}
+          />
+        )
+      case 'crypto':
+        return (
+          <StatCard
+            title="加密货币"
+            hint="币安 · 独立同步"
+            stats={s?.crypto_enriched}
+            loading={isLoading}
+            tierKey="crypto"
+            capLimits={mergedCaps}
+            subLabel="现货 + 合约 · 日K · 指标"
+            fieldTabs={[
+              { label: '维表', table: 'crypto_instruments' },
+              { label: '指标', table: 'crypto_enriched' },
+            ] as FieldTab[]}
+            onShowFields={(t) => setSchemaTable(t ?? 'crypto_enriched')}
+            onSettings={() => setOpenSettings(v => v === 'crypto' ? null : 'crypto')}
+            settingsOpen={openSettings === 'crypto'}
           />
         )
       case 'minute':
@@ -1219,6 +1239,14 @@ export function Data() {
         {openSettings === 'minute' && (
           <SettingsModal title="分钟 K · 同步设置" width="max-w-4xl" contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden" onClose={() => setOpenSettings(null)}>
             <MinuteSyncConfig hasCap={hasMinuteCap} onClose={() => setOpenSettings(null)} onJobStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }} />
+          </SettingsModal>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {openSettings === 'crypto' && (
+          <SettingsModal title="加密货币 · 数据同步" onClose={() => setOpenSettings(null)}>
+            <CryptoSyncConfig onClose={() => setOpenSettings(null)} />
           </SettingsModal>
         )}
       </AnimatePresence>

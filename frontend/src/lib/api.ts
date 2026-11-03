@@ -493,8 +493,17 @@ export interface OverviewDimensionRankItem {
   } | null
 }
 
+/** 看板市场 (资产类型) — 后端交易规则注册表声明的市场的前端子集 */
+export type DashboardMarket = 'stock' | 'crypto'
+
 export interface OverviewMarket {
   as_of: string | null
+  /** crypto 总览专属: 数据来源与涨跌幅口径声明 (binance_snapshot/local_enriched/none) */
+  market?: DashboardMarket
+  data_source?: 'binance_snapshot' | 'local_enriched' | 'none'
+  /** 24h_rolling = 币安 24 小时滚动窗口口径; trading_day = 日历日口径 */
+  data_window?: '24h_rolling' | 'trading_day' | string
+  scope?: string
   quote_status: {
     enabled?: boolean
     running?: boolean
@@ -521,14 +530,72 @@ export interface OverviewMarket {
   distribution: { label: string; count: number; pct: number }[]
   trend: { above_ma5: number; above_ma20: number; above_ma60: number; above_ma5_pct: number; above_ma20_pct: number; above_ma60_pct: number; new_high: number; new_low: number }
   activity: { avg_turnover: number; high_turnover: number; high_vol_ratio: number; vol_ratio: number }
-  radar: { key: string; label: string; value: number }[]
-  emotion: { score: number; label: string }
+  /** crypto 总览不提供情绪雷达 (null) */
+  radar: { key: string; label: string; value: number }[] | null
+  emotion: { score: number; label: string } | null
   top_gainers: MarketSnapshotRow[]
   top_losers: MarketSnapshotRow[]
   turnover_leaders: MarketSnapshotRow[]
   active_leaders: MarketSnapshotRow[]
   concept_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
+}
+
+// ===== 市场交易规则 (GET /api/markets/rules, 前端门控唯一来源) =====
+export type MarketFeatureKey =
+  | 'dashboard' | 'daily_screener' | 'minute_screener' | 'realtime_monitor'
+  | 'backtest' | 'limit_ladder' | 'sector_heat' | 'financial'
+  | 'news' | 'market_sentiment'
+
+export interface MarketRulesEntry {
+  label: string
+  t_plus_1: boolean
+  price_limit: boolean
+  lot_size: number
+  sessions: string
+  day_boundary: string
+  volume_unit: string
+  change_pct_window: string
+  features: Record<MarketFeatureKey, boolean>
+}
+
+export interface MarketRulesPayload {
+  markets: Partial<Record<DashboardMarket, MarketRulesEntry>>
+}
+
+// ===== 外部资讯 (GET /api/info/*) =====
+export interface NewsItem {
+  source: string
+  title: string
+  url?: string | null
+  summary?: string
+  published_at?: string | null
+}
+
+export interface NewsFeedResult {
+  asset_type: string
+  items: NewsItem[]
+  sources: string[]
+  errors: string[]
+  updated_at: string
+}
+
+export interface FngPoint { date: string | null; value: number; label: string }
+
+export interface FundingRateRow {
+  symbol: string
+  name: string
+  mark_price?: number | null
+  funding_rate?: number | null
+  next_funding_time?: number | string | null
+}
+
+export interface SentimentResult {
+  asset_type: string
+  fng: { current: FngPoint | null; history: FngPoint[]; updated_at: string; error?: string | null } | null
+  funding: FundingRateRow[]
+  note?: string
+  updated_at?: string
 }
 
 // ===== 概念涨幅轮动矩阵 =====
@@ -2444,6 +2511,10 @@ export interface Preferences {
   nav_hidden: string[]
   /** 看板自定义布局; null/缺省 = 未自定义(前端内置默认布局) */
   dashboard_layout: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
+  /** crypto 市场看板布局 (与 stock 相互独立) */
+  dashboard_layout_crypto?: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
+  /** 主界面当前市场 (默认 stock) */
+  dashboard_market?: DashboardMarket
   screener_auto_run: boolean
   /** AI 助手动作工具是否免确认直接执行 (默认 false) */
   assistant_auto_approve_actions: boolean
@@ -3201,11 +3272,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ nav_hidden }),
     }),
-  /** 保存看板自定义布局; layout=null 恢复默认布局 */
-  saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
+  /** 保存看板自定义布局; layout=null 恢复默认布局 (按 market 分市场存储) */
+  saveDashboardLayout: (layout: Preferences['dashboard_layout'], market: DashboardMarket = 'stock') =>
     request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
       method: 'PUT',
-      body: JSON.stringify({ layout }),
+      body: JSON.stringify({ layout, market }),
+    }),
+  /** 主界面当前市场切换 (stock / crypto), 看板布局按市场独立存储 */
+  saveDashboardMarket: (market: DashboardMarket) =>
+    request<{ dashboard_market: DashboardMarket }>('/api/settings/preferences/dashboard-market', {
+      method: 'PUT',
+      body: JSON.stringify({ market }),
     }),
   updateInstrumentsSchedule: (hour: number, minute: number) =>
     request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
@@ -3510,7 +3587,7 @@ export const api = {
       as_of: string | null
       elapsed_ms: number
       /** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
-      dates?: { stock: string | null; etf: string | null; index: string | null }
+      dates?: { stock: string | null; etf: string | null; index: string | null; crypto?: string | null }
     }>(
       extColumns
         ? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
@@ -3518,7 +3595,7 @@ export const api = {
     ),
 
   // timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
-  screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index', timeframe: '1d' | '1m' | 'all' = '1d') => {
+  screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index' | 'crypto', timeframe: '1d' | '1m' | 'all' = '1d') => {
     const data = await request<{
       strategies: StrategyDetail[]
       load_errors?: StrategyLoadError[]
@@ -3528,19 +3605,19 @@ export const api = {
     )
     return { presets: data.strategies, load_errors: data.load_errors, legacy_migration: data.legacy_migration }
   },
-  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerResult>('/api/screener/run_preset', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ strategy_id, pool, as_of: asOf ?? null, ext_columns: extColumns || null, asset_type: assetType, timeframe }),
     }),
-  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' = 'stock') =>
+  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' = 'stock') =>
     request<ScreenerResult>('/api/screener/run', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ conditions, order_by: orderBy, limit, pool, ext_columns: extColumns || null, asset_type: assetType }),
     }),
-  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' | 'crypto' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerRunAllSummary>(
       '/api/screener/run_all', { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, body: JSON.stringify({ as_of: asOf ?? null, strategy_ids: strategyIds ?? null, asset_type: assetType, timeframe, summary_only: true }) },
     ),
@@ -3560,7 +3637,14 @@ export const api = {
     ),
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
-  overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
+  overviewMarket: (asOf?: string, assetType: DashboardMarket = 'stock') =>
+    request<OverviewMarket>(`/api/overview/market?asset_type=${assetType}${asOf ? `&as_of=${asOf}` : ''}`),
+  /** 交易规则注册表: 各市场功能可用性 (看板门控唯一来源, 不在组件硬编码) */
+  marketRules: () => request<MarketRulesPayload>('/api/markets/rules'),
+  infoNews: (assetType: DashboardMarket = 'stock') =>
+    request<NewsFeedResult>(`/api/info/news?asset_type=${assetType}`),
+  infoSentiment: (assetType: DashboardMarket = 'crypto') =>
+    request<SentimentResult>(`/api/info/sentiment?asset_type=${assetType}`),
 
   // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
   rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>
@@ -3655,7 +3739,25 @@ export const api = {
   factorColumns: () =>
     request<{ columns: FactorColumn[] }>('/api/backtest/factor/columns'),
 
-  factorLibrary: (assetType?: 'stock' | 'etf') =>
+  cryptoSync: (withMinute: boolean) =>
+    request<{ started: boolean; with_minute: boolean }>('/api/crypto/sync', {
+      method: 'POST',
+      body: JSON.stringify({ with_minute: withMinute }),
+    }),
+  cryptoStatus: () =>
+    request<{
+      ok?: boolean | null
+      running?: boolean
+      started_at?: string
+      finished_at?: string
+      elapsed_s?: number
+      instruments?: number
+      error?: string
+      daily?: { ok?: boolean; rows?: number; symbols?: number; errors?: string[] }
+      minute?: { ok?: boolean; rows?: number; symbols?: number; errors?: string[] } | null
+    } | null>('/api/crypto/status'),
+
+  factorLibrary: (assetType?: 'stock' | 'etf' | 'crypto') =>
     request<{ factors: FactorLibraryItem[] }>(
       `/api/factors${assetType ? `?asset_type=${assetType}` : ''}`,
     ),
@@ -3666,7 +3768,7 @@ export const api = {
       body: JSON.stringify({ formula }),
     }),
 
-  factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf'; days?: number }) =>
+  factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf' | 'crypto'; days?: number }) =>
     request<FactorTrialResponse>('/api/factors/trial', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -3738,7 +3840,7 @@ export const api = {
     weight?: 'equal' | 'factor_weight'
     fees_pct?: number
     slippage_bps?: number
-    asset_type?: 'stock' | 'etf' | 'index'
+    asset_type?: 'stock' | 'etf' | 'crypto' | 'index'
   }) =>
     request<FactorBacktestResult>('/api/backtest/factor/run', {
       method: 'POST',
@@ -5101,6 +5203,8 @@ export interface DataStatus {
   index_instruments: InstrumentsStats | null
   etf_daily: TableStats | null
   etf_enriched: TableStats | null
+  crypto_enriched?: TableStats | null
+  crypto_instruments?: TableStats | null
   etf_instruments: InstrumentsStats | null
   minute: TableStats | null
   adj_factor: TableStats | null

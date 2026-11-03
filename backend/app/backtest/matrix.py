@@ -695,6 +695,7 @@ def load_market_data_matrix_from_parquet(
     cache_max_bytes: int = _MATRIX_DISK_CACHE_DEFAULT_MAX_BYTES,
     profile_generation: str = "default",
     source_generation: str | None = None,
+    enable_price_limits: bool = True,
     cancel_event: threading.Event | None = None,
 ) -> MarketDataMatrix:
     """Load a daily market matrix, reusing a covering read-only mmap when possible."""
@@ -747,6 +748,7 @@ def load_market_data_matrix_from_parquet(
             instruments,
             batch_size=batch_size,
             cache_status="disabled",
+            enable_price_limits=enable_price_limits,
             cancel_event=cancel_event,
         )
 
@@ -826,6 +828,7 @@ def load_market_data_matrix_from_parquet(
         source_generation,
         batch_size=batch_size,
         axis_cache_root=cache_dir,
+        enable_price_limits=enable_price_limits,
         cancel_event=cancel_event,
     )
     _raise_if_matrix_cancelled(cancel_event)
@@ -937,6 +940,7 @@ def _build_market_data_matrix_from_dataset(
     *,
     batch_size: int,
     cache_status: str,
+    enable_price_limits: bool = True,
     cancel_event: threading.Event | None = None,
 ) -> MarketDataMatrix:
     _raise_if_matrix_cancelled(cancel_event)
@@ -1017,6 +1021,7 @@ def _build_market_data_matrix_from_dataset(
         names,
         latest_limits,
         apply_latest_limits=actual_dates[-1] == _latest_partition_date(root),
+        enable=enable_price_limits,
     )
     timestamps, session_ids = _matrix_time_axes(actual_dates)
     _make_read_only(
@@ -1063,6 +1068,7 @@ def _build_market_data_matrix_cache_from_dataset(
     *,
     batch_size: int,
     axis_cache_root: Path,
+    enable_price_limits: bool = True,
     cancel_event: threading.Event | None = None,
 ) -> None:
     _raise_if_matrix_cancelled(cancel_event)
@@ -1178,6 +1184,7 @@ def _build_market_data_matrix_cache_from_dataset(
             out_up=arrays["limit_up_locked"],
             out_down=arrays["limit_down_locked"],
             apply_latest_limits=actual_dates[-1] == _latest_partition_date(root),
+            enable=enable_price_limits,
         )
         timing_ms["derived"] = round((time.perf_counter() - stage_started) * 1000, 1)
         _raise_if_matrix_cancelled(cancel_event)
@@ -2189,6 +2196,7 @@ def _limit_lock_matrices(
     out_up: np.ndarray | None = None,
     out_down: np.ndarray | None = None,
     apply_latest_limits: bool = True,
+    enable: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     shape = close.shape
     up_locked = out_up if out_up is not None else np.zeros(shape, dtype=np.uint8)
@@ -2198,6 +2206,11 @@ def _limit_lock_matrices(
     if len(trading_dates) != shape[0]:
         raise ValueError("price-limit date axis mismatch")
     up_locked.fill(0)
+    if not enable:
+        # 无涨跌停市场 (crypto): 跳过 A 股板块幅度规则计算 — board 规则对
+        # 未匹配前缀默认 10%, 会把 crypto 单日 ±10% 且一字的日子误标封板假拒单。
+        down_locked.fill(0)
+        return up_locked, down_locked
     down_locked.fill(0)
     legacy_pct, current_pct = numpy_limit_pct_vectors(symbols, names)
     pre_gem_pct = numpy_gem_pre_registration_vector(symbols, legacy_pct, names)
@@ -3904,6 +3917,10 @@ _MATRIX_COMPUTED_FEATURES = frozenset({
     "vol_regime_5_60", "amplitude_trend_20_60", "obv_trend_20d",
     "amount_mean_20d", "turnover_mean_20d", "turnover_std_20d",
     "position_240d", "distance_to_high_240d", "kdj_kd_diff",
+    # --- 扩充批次 (2026-11-02): 与注册表/scoring 口径一致的 7 个新虚拟因子 ---
+    "sharpe_momentum_60d", "fip_20d", "gain_loss_ratio_20d",
+    "ret_kurt_20d", "drawdown_20d", "ma_alignment_score",
+    "turnover_trend_5_60",
 })
 
 
@@ -4227,6 +4244,52 @@ def _compute_matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
         return _matrix_ratio(market.close - low, high - low)
     if name == "distance_to_high_240d":
         return _matrix_relative(market.close, valid_rolling_max(market.close, close_valid, 240))
+    # --- 扩充批次 (2026-11-02): numpy 内核实现, 口径与 strategy/scoring.py 一致 ---
+    if name == "sharpe_momentum_60d":
+        daily = matrix_feature(market, "change_pct")
+        valid = np.isfinite(daily)
+        return _matrix_ratio(
+            valid_rolling_mean(daily, valid, 60),
+            valid_rolling_std(daily, valid, 60, ddof=1),
+        )
+    if name == "fip_20d":
+        daily = matrix_feature(market, "change_pct")
+        valid = np.isfinite(daily)
+        # 指标列在日收益有效日恒非空 (0/1), 与 Polars 侧 rolling_sum(min_samples=20) 对齐
+        up = np.where(valid, (daily > 0).astype(np.float32), np.nan).astype(np.float32)
+        down = np.where(valid, (daily < 0).astype(np.float32), np.nan).astype(np.float32)
+        return (
+            valid_rolling_mean(down, np.isfinite(down), 20)
+            - valid_rolling_mean(up, np.isfinite(up), 20)
+        )
+    if name == "gain_loss_ratio_20d":
+        daily = matrix_feature(market, "change_pct")
+        valid = np.isfinite(daily)
+        gains = np.where(valid, np.maximum(daily, np.float32(0.0)), np.nan).astype(np.float32)
+        losses = np.where(valid, np.minimum(daily, np.float32(0.0)), np.nan).astype(np.float32)
+        return _matrix_ratio(
+            valid_rolling_mean(gains, np.isfinite(gains), 20),
+            -valid_rolling_mean(losses, np.isfinite(losses), 20),
+        )
+    if name == "ret_kurt_20d":
+        daily = matrix_feature(market, "change_pct")
+        return _matrix_rolling_kurtosis(daily, 20)
+    if name == "drawdown_20d":
+        return _matrix_relative(market.close, valid_rolling_max(market.close, close_valid, 20))
+    if name == "ma_alignment_score":
+        total = np.zeros(market.shape, dtype=np.float32)
+        for period in (5, 10, 20, 30, 60):
+            relative = _matrix_relative(market.close, matrix_feature(market, f"ma{period}"))
+            sign = np.where(np.isfinite(relative), np.sign(relative), np.nan).astype(np.float32)
+            total = total + sign
+        return total / np.float32(5.0)
+    if name == "turnover_trend_5_60":
+        turnover = market.field("turnover_rate")
+        valid = np.isfinite(turnover)
+        return _matrix_relative(
+            valid_rolling_mean(turnover, valid, 5),
+            valid_rolling_mean(turnover, valid, 60),
+        )
     raise ValueError(f"unsupported matrix feature: {name}")
 
 
@@ -4244,6 +4307,30 @@ def _matrix_rolling_skew(values: np.ndarray, window: int) -> np.ndarray:
         + np.float32(2.0) * np.power(first, 3)
     )
     out = _matrix_ratio(central_third, np.sqrt(np.power(variance, 3)))
+    out[np.isfinite(variance) & (variance <= 0)] = np.nan
+    return out
+
+
+def _matrix_rolling_kurtosis(values: np.ndarray, window: int) -> np.ndarray:
+    """超额峰度 (Pearson 口径 - 3), 矩法与 strategy/scoring.py 的表达式逐项一致。"""
+    valid = np.isfinite(values)
+    first = valid_rolling_mean(values, valid, window)
+    second = valid_rolling_mean(np.square(values, dtype=np.float32), valid, window)
+    third = valid_rolling_mean(
+        (values * values * values).astype(np.float32), valid, window
+    )
+    fourth = valid_rolling_mean(
+        (values * values * values * values).astype(np.float32), valid, window
+    )
+    variance = second - np.square(first, dtype=np.float32)
+    central_fourth = (
+        fourth
+        - np.float32(4.0) * first * third
+        + np.float32(6.0) * np.square(first, dtype=np.float32) * second
+        - np.float32(3.0) * np.power(first, 4)
+    )
+    out = _matrix_ratio(central_fourth, np.square(variance, dtype=np.float32))
+    out[np.isfinite(out)] -= np.float32(3.0)
     out[np.isfinite(variance) & (variance <= 0)] = np.nan
     return out
 

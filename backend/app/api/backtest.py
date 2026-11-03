@@ -93,9 +93,18 @@ class BacktestRequest(BaseModel):
     asset_type: str = "stock"
 
 
+def _guard_backtest_asset_type(asset_type: str) -> None:
+    """交易规则注册表守卫: crypto 等未参数化市场 fail-closed (见 trading_rules 模块注记)。"""
+    from app.services import trading_rules
+
+    if not trading_rules.is_feature_enabled(asset_type, "backtest"):
+        raise HTTPException(status_code=400, detail=trading_rules.deny_reason(asset_type, "backtest"))
+
+
 @router.post("/run")
 def run(req: BacktestRequest, request: Request):
     """信号回测 — 现有接口，向后兼容。"""
+    _guard_backtest_asset_type(req.asset_type)
     repo = request.app.state.repo
     svc = BacktestService(repo)
     end = req.end or cn_today()
@@ -157,6 +166,7 @@ def factor_run(req: FactorBacktestRequest, request: Request):
 
     if req.factor_name not in {item["id"] for item in factor_columns_view()}:
         raise HTTPException(status_code=400, detail=f"不支持的因子: {req.factor_name}")
+    _guard_backtest_asset_type(req.asset_type)
 
     engine = _get_engine(request)
     svc = FactorBacktestService(engine)
@@ -224,6 +234,7 @@ def factor_batch(req: FactorBatchRequest, request: Request):
     if invalid:
         raise HTTPException(status_code=400, detail=f"不支持的因子: {', '.join(invalid)}")
 
+    _guard_backtest_asset_type(req.asset_type)
     end = req.end or cn_today()
     start = _resolve_start(req, end, FACTOR_DEFAULT_DAYS)
     _guard_server_backtest_range(start, end)
@@ -406,6 +417,7 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     end = req.end or cn_today()
     start = _resolve_start(req, end, FACTOR_DEFAULT_DAYS)
     _guard_server_backtest_range(start, end)
+    _guard_backtest_asset_type(req.asset_type)
     _guard_minute_strategy_backtest(request, req.strategy_id, start, req.asset_type)
 
     if req.position_sizing == "policy":
@@ -633,6 +645,7 @@ async def strategy_stream(
         earliest = request.app.state.repo.earliest_daily_date()
         start_date = earliest or (end_date - timedelta(days=FACTOR_DEFAULT_DAYS))
     _guard_minute_strategy_backtest(request, strategy_id, start_date, asset_type)
+    _guard_backtest_asset_type(asset_type)
 
     # 服务端范围保护
     guard_violated = False
@@ -1002,6 +1015,7 @@ async def optimize_robust_stream(
     position_sizing: str = "equal",
     mode: str = "position",
     holding_days: int = 5,
+    asset_type: str = "stock",
 ):
     """SSE 流式稳健优化: 每组参数在 K 个互不重叠验证段上评估, 按稳健分排名。
 
@@ -1010,6 +1024,8 @@ async def optimize_robust_stream(
     """
     from app.backtest.robust_optimizer import RobustOptimizeConfig
     from app.backtest.worker import make_worker_task, run_worker_task
+
+    _guard_backtest_asset_type(asset_type)
 
     try:
         end_date = date.fromisoformat(end) if end else cn_today()
@@ -1203,6 +1219,7 @@ async def walkforward_stream(
     position_sizing: str = "equal",
     mode: str = "position",
     holding_days: int = 5,
+    asset_type: str = "stock",
 ):
     """SSE 流式 walk-forward: 每折训练区间网格优化 -> 测试区间 OOS 回测。
 
@@ -1211,6 +1228,7 @@ async def walkforward_stream(
     from app.backtest.walkforward import WalkForwardConfig
     from app.backtest.worker import make_worker_task, run_worker_task
 
+    _guard_backtest_asset_type(asset_type)
     direction = direction or None
 
     # 主目标白名单 (共享护栏): 与稳健优化同口径, 退化目标不作滚动检验主目标

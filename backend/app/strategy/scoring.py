@@ -257,6 +257,54 @@ def scoring_value_expr(columns: Collection[str], name: str) -> pl.Expr | None:
         ).over("symbol")
     if name == "kdj_kd_diff":
         return pl.col("kdj_k") - pl.col("kdj_d")
+    # ── 扩充批次 (2026-11-02): 动量质量/收益分布形态/回撤/排列/换手趋势 ──
+    if name == "sharpe_momentum_60d":
+        change = _daily_change_expr()
+        return _ratio(
+            change.rolling_mean(60, min_samples=60),
+            change.rolling_std(60, min_samples=60),
+        ).over("symbol")
+    if name == "fip_20d":
+        change = _daily_change_expr()
+        up = (change > 0).cast(pl.Float64).rolling_sum(20, min_samples=20)
+        down = (change < 0).cast(pl.Float64).rolling_sum(20, min_samples=20)
+        return ((down - up) / 20.0).over("symbol")
+    if name == "gain_loss_ratio_20d":
+        change = _daily_change_expr()
+        gains = change.clip(lower_bound=0.0).rolling_mean(20, min_samples=20)
+        losses = change.clip(upper_bound=0.0).rolling_mean(20, min_samples=20)
+        return _ratio(gains, -losses).over("symbol")
+    if name == "ret_kurt_20d":
+        change = _daily_change_expr()
+        m1 = change.rolling_mean(20, min_samples=20)
+        m2 = (change**2).rolling_mean(20, min_samples=20)
+        m3 = (change**3).rolling_mean(20, min_samples=20)
+        m4 = (change**4).rolling_mean(20, min_samples=20)
+        variance = m2 - m1 * m1
+        mu4 = m4 - 4.0 * m1 * m3 + 6.0 * m1 * m1 * m2 - 3.0 * m1**4
+        return (
+            pl.when(variance > 0).then(mu4 / variance**2 - 3.0).otherwise(None)
+            .over("symbol")
+        )
+    if name == "drawdown_20d":
+        return _relative(
+            pl.col("close"),
+            pl.col("close").rolling_max(20, min_samples=20),
+        ).over("symbol")
+    if name == "ma_alignment_score":
+        return (
+            sum(
+                _relative(pl.col("close"), pl.col(f"ma{period}")).sign()
+                for period in (5, 10, 20, 30, 60)
+            )
+            / 5.0
+        )
+    if name == "turnover_trend_5_60":
+        turnover = pl.col("turnover_rate")
+        return _relative(
+            turnover.rolling_mean(5, min_samples=5),
+            turnover.rolling_mean(60, min_samples=60),
+        ).over("symbol")
     return None
 
 

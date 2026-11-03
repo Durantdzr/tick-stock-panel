@@ -101,7 +101,7 @@ def get_etf_daily(symbol, start=None, end=None, columns=None):
 
 
 def get_daily(symbol, start=None, end=None, columns=None):
-    """按资产类型自动分派读取日K: 指数 → get_index_daily; ETF → get_etf_daily; 股票 → get_daily。"""
+    """按资产类型自动分派读取日K: 指数/ETF/加密货币独立目录, 其余股票。"""
     if not _validate_symbol(symbol):
         logger.warning("market_data: 非法 symbol %r", symbol)
         return pl.DataFrame()
@@ -114,6 +114,8 @@ def get_daily(symbol, start=None, end=None, columns=None):
             return repo.get_index_daily(symbol, s, e, columns)
         if asset_type == "etf":
             return repo.get_etf_daily(symbol, s, e, columns)
+        if asset_type == "crypto":
+            return repo.get_crypto_daily(symbol, s, e, columns)
         return repo.get_daily(symbol, s, e, columns)
     except Exception as exc:
         logger.warning("market_data get_daily failed %s: %s", symbol, exc)

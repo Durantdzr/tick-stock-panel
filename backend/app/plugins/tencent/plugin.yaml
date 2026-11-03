@@ -1,0 +1,10 @@
+# 腾讯公开行情接口插件 (非官方, qt.gtimg.cn / web.ifzq.gtimg.cn 公开端点)。
+# 纯 HTTP REST, 无需 API Key (runtime: none)。
+
+name: tencent
+display_name: "腾讯行情"
+runtime: none
+entry: app.plugins.tencent.provider:TencentProvider
+check: app.plugins.tencent.provider:availability
+datasets: [daily, minute, depth5]
+description: "腾讯公开行情接口(非官方)。日K(原始价, 沪深A股) + 1分钟K(最近约1.3个交易日) + 五档盘口(60只/批)。免费接口有限频, provider 内置节流; 不含北交所。"

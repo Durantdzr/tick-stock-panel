@@ -150,6 +150,7 @@ def test_intraday_rule_rejects_non_symbol_scope():
 
 def test_intraday_support_uses_capability_limits(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "tickflow")
+    monkeypatch.setattr("app.services.kline_sync._selected_minute_provider_name", lambda: "tickflow")  # 测试隔离: 该函数读真实 preferences.json 检测静默回退
     capset = CapabilitySet({Cap.KLINE_MINUTE_BATCH: CapabilityLimits(batch=25, rpm=30)})
     support = intraday_monitor_support(capset)
     assert support["available"] is True
@@ -162,6 +163,7 @@ def test_intraday_support_uses_capability_limits(monkeypatch):
 
 def test_intraday_batch_provider_is_normalized_without_network(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "tickflow")
+    monkeypatch.setattr("app.services.kline_sync._selected_minute_provider_name", lambda: "tickflow")  # 测试隔离: 该函数读真实 preferences.json 检测静默回退
 
     class FakeKlines:
         def intraday_batch(self, symbols, count, as_dataframe, show_progress, batch_size):

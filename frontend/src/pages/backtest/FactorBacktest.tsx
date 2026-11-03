@@ -88,7 +88,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
   const queryClient = useQueryClient()
   const [factorName, setFactorName] = useState(initialFactorName)
   const [symbols, setSymbols] = useState('')
-  const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto'>('stock')
   const [start, setStart] = useState(THREE_MONTHS_AGO)
   const [end, setEnd] = useState(TODAY)
   const [nGroups, setNGroups] = useState(5)
@@ -232,7 +232,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
         <div>
           <label className="text-xs font-medium text-secondary block mb-1.5">资产类型</label>
           <div className="inline-flex h-8 rounded-btn border border-border overflow-hidden mb-2">
-            {(['stock', 'etf'] as const).map(t => (
+            {(['stock', 'etf', 'crypto'] as const).map(t => (
               <button
                 key={t}
                 type="button"
@@ -240,7 +240,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
                 className={`h-full px-3 text-xs font-medium transition-colors cursor-pointer
                   ${assetType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'}`}
               >
-                {t === 'stock' ? '股票' : 'ETF'}
+                {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '加密货币'}
               </button>
             ))}
           </div>
@@ -378,7 +378,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
           <LoadingPanel symbolsText={symbols ? `${symbols.split(',').length} 只标的` : '全市场 · 当前区间'} />
         )}
 
-        <DailyResultStaleNotice result={result} assetType={result?.config.asset_type === 'etf' ? 'etf' : 'stock'} />
+        <DailyResultStaleNotice result={result} assetType={result?.config.asset_type === 'etf' ? 'etf' : result?.config.asset_type === 'crypto' ? 'crypto' : 'stock'} />
         {result && !result.error && (
           <motion.div
             initial={{ opacity: 0, y: 8 }}

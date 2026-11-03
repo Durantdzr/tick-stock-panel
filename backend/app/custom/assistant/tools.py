@@ -695,7 +695,13 @@ def _get_factor_values(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     # 会给 0 或极端值, 直接按值排序会把整个榜单挤成新股 —— 用户要的是「全市场 RSI 最低」,
     # 不是「刚上市还没数据」。默认 60 天; 传 0 可关闭过滤。
     min_listed_days = _clamp(args.get("min_listed_days"), 0, 3650, 60)
-    df, as_of = repo.get_enriched_latest()
+    # 市场分派: crypto 因子值走独立 enriched 缓存 (kline_crypto_enriched),
+    # 换手率/涨停基因类因子不在 crypto 注册表, list_factors 已按资产过滤。
+    asset_type = str(args.get("asset_type") or "").strip().lower()
+    if asset_type == "crypto":
+        df, as_of = repo.get_enriched_latest_asset("crypto")
+    else:
+        df, as_of = repo.get_enriched_latest()
     if df is None or df.is_empty():
         raise ValueError("本地暂无行情数据, 无法读取因子值。")
     if factor not in df.columns:
@@ -1481,6 +1487,7 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
             "不过滤会把整个榜单挤成新股); 返回值里的 excluded_new_listings 说明排除了多少只。",
             {
                 "factor": {"type": "string", "description": "因子 id"},
+                "asset_type": {"type": "string", "enum": ["stock", "crypto"], "description": "市场; 缺省 stock, crypto 走加密货币 enriched 快照"},
                 "top": {"type": "integer", "description": "返回前 N 名 (5-50, 默认 30)"},
                 "direction": {"type": "string", "enum": ["desc", "asc"], "description": "排序方向, 默认 desc(从大到小)"},
                 "min_listed_days": {

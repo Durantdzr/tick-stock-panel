@@ -25,7 +25,10 @@ Unit = Literal["ratio", "pct", "score", "count", "days", "currency", "none"]
 PitSource = Literal["financial_announce", "share_capital_announce", "none"]
 Stability = Literal["stable", "experimental", "deprecated"]
 
-_ALL_ASSETS = frozenset({"stock", "etf"})
+# crypto enriched 运行时缺 turnover_rate / consecutive_limit_* (无股本/无涨跌停),
+# 依赖这些列的因子维持 stock/etf (fail-closed); 其余 OHLCV/指标类因子三市场通用。
+_ALL_ASSETS = frozenset({"stock", "etf", "crypto"})
+_STOCK_ETF = frozenset({"stock", "etf"})
 _STOCK_ONLY = frozenset({"stock"})
 
 
@@ -141,10 +144,11 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "vol_trend_5_10", "成交量趋势", "量价", "5日平均成交量 / 10日平均成交量 - 1",
         deps=frozenset({"vol_ma5", "vol_ma10"}),
     ),
-    _base("turnover_rate", "换手率", "量价", "使用历史时点流通股本计算的当日换手率"),
+    _base("turnover_rate", "换手率", "量价", "使用历史时点流通股本计算的当日换手率", asset_types=_STOCK_ETF),
     _virtual(
         "turnover_ratio_5d", "换手率放大", "量价", "当日换手率 / 前5日平均换手率 - 1",
         deps=frozenset({"turnover_rate"}), warmup_bars=6,
+        asset_types=_STOCK_ETF,
     ),
     _virtual(
         "log_amount", "成交额对数", "量价", "ln(成交额 + 1), 降低极端规模影响",
@@ -194,6 +198,7 @@ _CATALOG: tuple[FactorSpec, ...] = (
     _virtual(
         "turnover_z_60d", "换手率60日z分", "流动性", "(当日换手率 - 前60日均值) / 前60日标准差, 衡量换手异动",
         deps=frozenset({"turnover_rate"}), warmup_bars=61,
+        asset_types=_STOCK_ETF,
     ),
     # --- 量价 (续) ---
     _virtual(
@@ -208,10 +213,12 @@ _CATALOG: tuple[FactorSpec, ...] = (
     _virtual(
         "limit_up_count_20d", "涨停基因(20日)", "涨停基因", "近20个交易日涨停次数",
         deps=frozenset({"consecutive_limit_ups"}), warmup_bars=21,
+        asset_types=_STOCK_ETF,
     ),
     _virtual(
         "limit_up_count_60d", "涨停基因(60日)", "涨停基因", "近60个交易日涨停次数",
         deps=frozenset({"consecutive_limit_ups"}), warmup_bars=61,
+        asset_types=_STOCK_ETF,
     ),
     # --- 财务 (点时, 仅股票) ---
     _financial("pb_latest", "市净率(最新公告)", "收盘价 / 最新已公告每股净资产; 无财务数据或公告前为空"),
@@ -226,6 +233,7 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "log_float_mv", "流通市值对数", "规模",
         "ln(收盘价 x 当日成交量 / 换手率), 由换手率反推流通股本, 高值代表大盘",
         deps=frozenset({"close", "volume", "turnover_rate"}), scale_free=False,
+        asset_types=_STOCK_ETF,
     ),
     _virtual(
         "momentum_120d", "120日动量", "动量",
@@ -281,11 +289,13 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "turnover_mean_20d", "20日均换手", "流动性",
         "近20日平均换手率, A股经典低换手溢价因子",
         deps=frozenset({"turnover_rate"}), warmup_bars=21,
+        asset_types=_STOCK_ETF,
     ),
     _virtual(
         "turnover_std_20d", "20日换手波动", "流动性",
         "近20日换手率标准差 / 均值 (变异系数), 衡量交易活跃的稳定性",
         deps=frozenset({"turnover_rate"}), warmup_bars=21,
+        asset_types=_STOCK_ETF,
     ),
     _virtual(
         "position_240d", "一年价格位置", "价格位置",
@@ -301,6 +311,43 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "kdj_kd_diff", "KDJ K-D差", "趋势",
         "KDJ K值 - D值, 正值代表快线在慢线上方",
         deps=frozenset({"kdj_k", "kdj_d"}),
+    ),
+    # --- 扩充批次 (2026-11-02): 动量质量/收益分布形态/回撤/排列/换手趋势 ---
+    _virtual(
+        "sharpe_momentum_60d", "风险调整动量(60日)", "动量",
+        "近60日日收益均值 / 日收益标准差 (滚动夏普动量), 收益与稳定性兼顾",
+        deps=frozenset({"close"}), warmup_bars=61,
+    ),
+    _virtual(
+        "fip_20d", "动量平滑度FIP(20日)", "收益形态",
+        "近20日下跌天数占比 - 上涨天数占比, 越负代表动量路径越平滑 (Da et al. 2014)",
+        deps=frozenset({"close"}), warmup_bars=21,
+    ),
+    _virtual(
+        "gain_loss_ratio_20d", "盈亏比(20日)", "收益形态",
+        "近20日平均上涨幅度 / 平均下跌幅度绝对值, 高值代表上行动能占优",
+        deps=frozenset({"close"}), warmup_bars=21,
+    ),
+    _virtual(
+        "ret_kurt_20d", "20日收益峰度", "收益形态",
+        "近20日日收益超额峰度, 高值代表尾部(极端涨跌)风险大",
+        deps=frozenset({"close"}), warmup_bars=21,
+    ),
+    _virtual(
+        "drawdown_20d", "20日回撤深度", "价格位置",
+        "收盘价 / 近20日最高收盘价 - 1, 接近0代表处于阶段高位",
+        deps=frozenset({"close"}), warmup_bars=21,
+    ),
+    _virtual(
+        "ma_alignment_score", "均线多头排列", "趋势",
+        "sign(收盘/MA-1) 对 MA5/10/20/30/60 求平均, [-1,1], 高值代表多头排列",
+        deps=frozenset({"close", "ma5", "ma10", "ma20", "ma30", "ma60"}),
+    ),
+    _virtual(
+        "turnover_trend_5_60", "换手率趋势(5/60)", "流动性",
+        "5日均换手率 / 60日均换手率 - 1, 高值代表交易拥挤度快速抬升",
+        deps=frozenset({"turnover_rate"}), warmup_bars=60,
+        asset_types=_STOCK_ETF,
     ),
 )
 

@@ -70,6 +70,14 @@ TickFlow 的「先探后存」语义:
 
 内置插件的 `runtime` 决定依赖安装方式，实际就绪检测由 `check` 函数负责。外部源码包只检查依赖兼容性，不执行 pip/npm 安装。
 
+### asset_types 字段说明（可选，市场限定声明）
+
+清单可声明 `asset_types: [crypto]` 表示**专用市场数据源**：声明后该源不进入
+A 股 7 能力路由候选（能力矩阵 `candidates`/门禁 `provider_names` 均排除），
+防止把 A 股日K误路由到币安这类市场专属源；市场内取数由该市场的服务直接
+经 `custom.loader.get_provider(name)` 完成（如 crypto → `services/crypto_sync.py`）。
+未声明视为通用 A 股源，行为与既有插件一致。
+
 ### check 函数
 
 插件自己负责检测依赖/Key 是否就绪。后端启动时会调用此函数:
@@ -321,6 +329,19 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
 
 ## 现有插件参考
 
+- **`backend/app/plugins/baostock/`** — Baostock 免费数据平台(runtime: python, `baostock` 已是后端默认依赖, 匿名登录无需 Key)
+  - 提供 `adj_factor`(query_adjust_factor 全历史涨跌幅复权累积链换算单事件比值, 换算公式与端到端前复权验证见 provider docstring)、`financial`(metrics=盈利/成长/偿债/营运/现金流五类季度指标含 pubDate 公告日期 + shares=按报告期/公告日的总股本/流通股; 三大报表无科目级数据返回空表保留存量)
+  - 口径注意: 涨跌幅复权法不含分红再投资收益成分, 与 fuyao 交易所公式因子在远端历史可能有 ~0.3% 级差异(厂商口径差异, 实测最后除权日后偏差为 0)
+  - SDK 为全局单连接非线程安全, 全部查询经模块级锁串行化; 仅覆盖沪深(无北交所)
+- **`backend/app/plugins/eastmoney/`** — 东方财富公开行情(runtime: none, 免 Key)
+  - 提供 `realtime`(沪深京 A 股全市场快照, clist 接口分页 ~60 页, 轮询间隔建议 ≥60s)、`daily`/`minute`(单标的 kline 接口 klt=101/1, fqt=0 锁原始价; 分钟近端约 5 个交易日, `minute_history_days=5`); 免费接口限频敏感, provider 内置 0.5s 页间隔/0.15s 标的间隔
+- **`backend/app/plugins/tencent/`** — 腾讯公开行情(runtime: none, 免 Key)
+  - 提供 `daily`(沪深 A 股单标的 fqkline 接口, 原始价; 注意 day 行顺序是 开,收,高,低,量(手), amount 接口不提供置 None)、`minute`(mkline m1 接口, 最近 320 根 ≈1.3 个交易日, `minute_history_days=1` 声明浅源, 北京墙钟 naive)、`depth5`(qt.gtimg.cn 批量快照解析五档, 60 只/批, 量=手); 批量快照无法服务 quote_service 全市场轮询, 故不声明 realtime; 不含北交所
+- **`backend/app/plugins/sina/`** — 新浪财经公开行情(runtime: none, 免 Key, realtime 需 Referer 头)
+  - 提供 `realtime`(沪深京 A 股全市场快照, hs_a 节点分页; volume 股→手, changepercent/turnoverratio 百分数→小数制)、`daily`(getKLineData 单标的, 原始价, 深度 ~1023 根约 4 年, 超窗 fail-closed); 限频敏感, 轮询间隔建议 ≥60s
+- **`backend/app/plugins/binance/`** — 币安公开行情(runtime: none, 免 Key, 可选 `BINANCE_API_KEY` 提额)
+  - 加密货币专用市场源, 清单声明 `asset_types: [crypto]`(不进 A 股 7 能力路由候选), 由 crypto 同步服务(`services/crypto_sync.py`)直接取数; 提供 `daily`/`minute`(现货 + U 本位合约, 合约内部 `.P` 后缀命名空间, 时间统一北京墙钟)、`realtime`(24hr 快照); **volume=基础币数量、amount=USDT**(非股票手/元口径); 详见 [crypto-market.md](./crypto-market.md)
+  - `tests/test_crypto_pipeline.py` — 管道/契约测试(含 provider 时区与单位断言)
 - **`backend/app/plugins/fuyao/`** — 同花顺官方 REST 数据源(runtime: none, 纯 HTTP 零依赖)
   - 提供 `realtime`(A 股全市场快照, 分页拉取)、`daily`(原始价日K三档: 近端窗口走 daily-k-10d dump, 深窗口走 daily-k 10 年全量 dump(172MB 一次下载、缓存复用、10d 补尾), 兜底单标的接口按 10 年自动分片)、`adj_factor`(事件 dump + 前收盘价从本地日K dump 一次取齐、缺价标的回退单标的接口, 按交易所公式推导单事件比值, 涨跌停自检; 全市场配价从逐标的 ~13 分钟降为秒级); Key 在设置页卡片直接配置(先探后存), 或 `.env` 配 `FUYAO_API_KEY`
   - `client.py` — httpx 客户端(X-api-key 认证 + 统一信封解包 + 分页 + 页间隔限频 + 单标的日K + dump 预签名下载, S3 下载不带 Key 头)

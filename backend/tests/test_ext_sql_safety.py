@@ -16,7 +16,6 @@ import pytest
 
 from app.db_safe import is_valid_ext_ident, quote_ident
 
-
 # ===== quote_ident 转义正确性 =====
 
 def test_quote_ident_wraps_in_double_quotes():

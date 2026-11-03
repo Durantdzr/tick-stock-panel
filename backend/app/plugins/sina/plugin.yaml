@@ -1,0 +1,10 @@
+# 新浪财经公开行情接口插件 (非官方, vip.stock.finance.sina.com.cn 公开端点)。
+# 纯 HTTP REST, 无需 API Key (runtime: none); realtime 需要 Referer 请求头。
+
+name: sina
+display_name: "新浪财经"
+runtime: none
+entry: app.plugins.sina.provider:SinaProvider
+check: app.plugins.sina.provider:availability
+datasets: [realtime, daily]
+description: "新浪财经公开行情接口(非官方)。全市场实时快照(沪深京A, 分页)与单标的日K(原始价, 约4年深度, volume 股→手换算)。免费接口有限频, realtime 轮询间隔建议>=60s。"

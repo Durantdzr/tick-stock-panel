@@ -33,6 +33,33 @@ from app.tickflow.repository import KlineRepository
 logger = logging.getLogger(__name__)
 
 
+def _market_trading_rules(asset_type: str) -> dict:
+    """市场交易规则声明 (services.trading_rules 单一权威); 未知类型返回空 dict。"""
+    from app.services import trading_rules
+
+    try:
+        return trading_rules.get_trading_rules(asset_type)
+    except ValueError:
+        return {}
+
+
+def _lot_round_shares(
+    allocation: float, entry_price: float, buy_cost_pct: float, lot_size: float
+) -> float:
+    """按市场整手规则把预算换算成数量。
+
+    lot_size > 0: 向下取整到整手倍数 (A股 100 股); lot_size == 0: 任意精度
+    (crypto 按预算全额成交, 浮点数量)。价格非法时返回 0 由调用方按
+    buy_lot_size 计数跳过。
+    """
+    if entry_price <= 0 or not np.isfinite(entry_price):
+        return 0.0
+    raw = allocation / (entry_price * (1 + buy_cost_pct))
+    if lot_size > 0:
+        return float(np.floor(raw / lot_size) * lot_size)
+    return float(raw)
+
+
 def _matrix_entry_score(matrix: MarketMatrix, time_id: int, asset_id: int) -> float:
     source_time = int(matrix.entry_signal_time[time_id, asset_id])
     if source_time < 0:
@@ -141,6 +168,15 @@ class MatcherConfig:
     minute_fill: bool = False
     # 回测资产类型: 分钟K按资产类型分开存储, 精确成交据此路由分钟分区 (不凭代码格式猜测)。
     asset_type: str = "stock"
+    # 市场交易规则 (由 services.trading_rules 按资产类型派生, 见 strategy 构造点):
+    # - t_plus_1: 当日买入次日才可卖 (A股/ETF)。False=T+0: 当日风险退出放行、
+    #   卖出后当日可再买。入场撮合口径 (entry_fill) 不受影响 — 日线信号收盘后才
+    #   产生, 各市场统一 open_t+1 默认, 防未来函数 (CONTRIBUTING §5.3)。
+    # - lot_size: 整手取整基数 (股)。0 = 任意精度数量 (crypto 按金额全额成交)。
+    # - price_limit: 涨跌停拒单开关。False 时跳过封板/一字板判定 (无涨跌停市场)。
+    t_plus_1: bool = True
+    lot_size: float = 100.0
+    price_limit: bool = True
 
     def __post_init__(self) -> None:
         # 解析最终口径: 优先 entry_fill/exit_fill, 否则回退到 matching (向后兼容)。
@@ -686,6 +722,9 @@ class BacktestEngine:
                         cache_profile.generation if cache_profile is not None else "request"
                     ),
                     source_generation=source_generation,
+                    enable_price_limits=bool(
+                        _market_trading_rules(asset_type).get("price_limit", True)
+                    ),
                     cancel_event=cancel_event,
                 )
                 self.assert_data_generation(asset_type, source_generation)
@@ -1090,12 +1129,13 @@ class BacktestEngine:
                 return False, "buy_suspended"
             if not _valid_price(entry_prices[time_id, asset_id]):
                 return False, "buy_invalid_price"
-            if config.entry_fill == "close_t" and bool(matrix.limit_up_locked[time_id, asset_id]):
+            if config.price_limit and config.entry_fill == "close_t" and bool(matrix.limit_up_locked[time_id, asset_id]):
                 # close_t 按信号日收盘价成交: 收盘封板(含一字)在收盘价的买队排队
                 # 现实中排不进, 一律拦截 — 旧实现只拦一字板, 尾盘封板股按涨停价
                 # "成交"导致回测收益虚高。open_t+1 按次日开盘成交, 不受此限。
+                # 无涨跌停市场 (price_limit=False) 跳过封板判定。
                 return False, "buy_limit_up"
-            if _one_price_limit(time_id, asset_id, "up"):
+            if config.price_limit and _one_price_limit(time_id, asset_id, "up"):
                 return False, "buy_limit_up"
             return True, ""
 
@@ -1106,7 +1146,8 @@ class BacktestEngine:
             if not _valid_price(price):
                 return False, "sell_invalid_price"
             if (
-                override is None
+                config.price_limit
+                and override is None
                 and config.exit_fill == "close_t"
                 and bool(matrix.limit_down_locked[time_id, asset_id])
             ):
@@ -1115,13 +1156,15 @@ class BacktestEngine:
                 # 一字跌停, 尾盘封板股按跌停价"卖出"导致亏损被低估(涨停拒买的
                 # 镜像问题)。日内风控线(override)是盘中成交, 不受收盘封板影响。
                 return False, "sell_limit_down"
-            if _one_price_limit(time_id, asset_id, "down"):
+            if config.price_limit and _one_price_limit(time_id, asset_id, "down"):
                 return False, "sell_limit_down"
             return True, ""
 
         def _risk_exit(pos: dict, time_id: int, asset_id: int) -> tuple[str | None, float | None]:
-            if pos.get("pending_exit_reason") or pos["entry_time"] == time_id:
+            if pos.get("pending_exit_reason"):
                 return None, None
+            if config.t_plus_1 and pos["entry_time"] == time_id:
+                return None, None  # T+1: 当日买入不可卖; T+0 市场当日风险退出放行
             entry_price = float(pos["entry_price"])
             open_price = float(matrix.open[time_id, asset_id])
             low_price = float(matrix.low[time_id, asset_id])
@@ -1553,12 +1596,12 @@ class BacktestEngine:
                 return False, "buy_suspended"
             if not _valid_price(entry_prices[idx]):
                 return False, "buy_invalid_price"
-            if config.entry_fill == "close_t" and bool(limit_up_flags[idx]):
+            if config.price_limit and config.entry_fill == "close_t" and bool(limit_up_flags[idx]):
                 # close_t 按信号日收盘价成交: 收盘封板(含一字)在收盘价的买队排队
                 # 现实中排不进, 一律拦截 — 旧实现只拦一字板, 尾盘封板股按涨停价
                 # "成交"导致回测收益虚高。open_t+1 按次日开盘成交, 不受此限。
                 return False, "buy_limit_up"
-            if _is_one_price_limit(idx, "up"):
+            if config.price_limit and _is_one_price_limit(idx, "up"):
                 return False, "buy_limit_up"
             return True, ""
 
@@ -1569,7 +1612,8 @@ class BacktestEngine:
             if not _valid_price(exit_price):
                 return False, "sell_invalid_price"
             if (
-                exit_price_override is None
+                config.price_limit
+                and exit_price_override is None
                 and config.exit_fill == "close_t"
                 and bool(limit_down_flags[idx])
             ):
@@ -1578,13 +1622,15 @@ class BacktestEngine:
                 # 一字跌停, 尾盘封板股按跌停价"卖出"导致亏损被低估(涨停拒买的
                 # 镜像问题)。日内风控线(override)是盘中成交, 不受收盘封板影响。
                 return False, "sell_limit_down"
-            if _is_one_price_limit(idx, "down"):
+            if config.price_limit and _is_one_price_limit(idx, "down"):
                 return False, "sell_limit_down"
             return True, ""
 
         def _risk_exit(pos: dict, idx: int) -> tuple[str | None, float | None]:
-            if pos.get("pending_exit_reason") or pos.get("entry_idx") == idx:
+            if pos.get("pending_exit_reason"):
                 return None, None
+            if config.t_plus_1 and pos.get("entry_idx") == idx:
+                return None, None  # T+1: 当日买入不可卖; T+0 市场当日风险退出放行
             entry_price = float(pos["entry_price"])
             if entry_price <= 0:
                 return None, None
@@ -2101,12 +2147,13 @@ class BacktestEngine:
                 return False, "buy_suspended"
             if not _valid_price(entry_prices[time_id, asset_id]):
                 return False, "buy_invalid_price"
-            if config.entry_fill == "close_t" and bool(matrix.limit_up_locked[time_id, asset_id]):
+            if config.price_limit and config.entry_fill == "close_t" and bool(matrix.limit_up_locked[time_id, asset_id]):
                 # close_t 按信号日收盘价成交: 收盘封板(含一字)在收盘价的买队排队
                 # 现实中排不进, 一律拦截 — 旧实现只拦一字板, 尾盘封板股按涨停价
                 # "成交"导致回测收益虚高。open_t+1 按次日开盘成交, 不受此限。
+                # 无涨跌停市场 (price_limit=False) 跳过封板判定。
                 return False, "buy_limit_up"
-            if _one_price_limit(time_id, asset_id, "up"):
+            if config.price_limit and _one_price_limit(time_id, asset_id, "up"):
                 return False, "buy_limit_up"
             return True, ""
 
@@ -2117,7 +2164,8 @@ class BacktestEngine:
             if not _valid_price(price):
                 return False, "sell_invalid_price"
             if (
-                override is None
+                config.price_limit
+                and override is None
                 and config.exit_fill == "close_t"
                 and bool(matrix.limit_down_locked[time_id, asset_id])
             ):
@@ -2126,7 +2174,7 @@ class BacktestEngine:
                 # legacy 路径同口径 (本路径此前只拦一字板, 尾盘封板股按跌停价
                 # "卖出"导致亏损被低估)。
                 return False, "sell_limit_down"
-            if _one_price_limit(time_id, asset_id, "down"):
+            if config.price_limit and _one_price_limit(time_id, asset_id, "down"):
                 return False, "sell_limit_down"
             return True, ""
 
@@ -2252,8 +2300,10 @@ class BacktestEngine:
 
             for asset_id in list(positions):
                 pos = positions.get(asset_id)
-                if pos is None or pos.get("pending_exit_reason") or pos["entry_date"] == date_text:
+                if pos is None or pos.get("pending_exit_reason"):
                     continue
+                if config.t_plus_1 and pos["entry_date"] == date_text:
+                    continue  # T+1: 当日买入不可卖; T+0 市场当日风险退出放行
                 if not matrix.tradable[time_id, asset_id] or pos["entry_price"] <= 0:
                     continue
                 open_price = float(matrix.open[time_id, asset_id])
@@ -2315,8 +2365,10 @@ class BacktestEngine:
                     if asset in positions:
                         continue
                     if asset in sold_today:
-                        _count("buy_same_day_reentry")
-                        continue
+                        if config.t_plus_1:
+                            _count("buy_same_day_reentry")
+                            continue
+                        # T+0 市场: 卖出后当日可再买
                     ok, blocked = _can_buy(time_id, asset)
                     if not ok:
                         _count(blocked)
@@ -2389,7 +2441,7 @@ class BacktestEngine:
                             entry_price = _refill_price(
                                 time_id, asset_id, "buy", float(entry_prices[time_id, asset_id])
                             )
-                            shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
+                            shares = _lot_round_shares(allocation, entry_price, buy_cost_pct, config.lot_size)
                             entry_value = shares * entry_price * (1 + buy_cost_pct)
                             if shares <= 0:
                                 _count("buy_lot_size")
@@ -2742,12 +2794,12 @@ class BacktestEngine:
                 return False, "buy_suspended"
             if not _valid_price(entry_prices[idx]):
                 return False, "buy_invalid_price"
-            if config.entry_fill == "close_t" and bool(limit_up_flags[idx]):
+            if config.price_limit and config.entry_fill == "close_t" and bool(limit_up_flags[idx]):
                 # close_t 按信号日收盘价成交: 收盘封板(含一字)在收盘价的买队排队
                 # 现实中排不进, 一律拦截 — 旧实现只拦一字板, 尾盘封板股按涨停价
                 # "成交"导致回测收益虚高。open_t+1 按次日开盘成交, 不受此限。
                 return False, "buy_limit_up"
-            if _is_one_price_limit(idx, "up"):
+            if config.price_limit and _is_one_price_limit(idx, "up"):
                 return False, "buy_limit_up"
             return True, ""
 
@@ -2758,7 +2810,8 @@ class BacktestEngine:
             if not _valid_price(exit_price):
                 return False, "sell_invalid_price"
             if (
-                exit_price_override is None
+                config.price_limit
+                and exit_price_override is None
                 and config.exit_fill == "close_t"
                 and bool(limit_down_flags[idx])
             ):
@@ -2767,7 +2820,7 @@ class BacktestEngine:
                 # 一字跌停, 尾盘封板股按跌停价"卖出"导致亏损被低估(涨停拒买的
                 # 镜像问题)。日内风控线(override)是盘中成交, 不受收盘封板影响。
                 return False, "sell_limit_down"
-            if _is_one_price_limit(idx, "down"):
+            if config.price_limit and _is_one_price_limit(idx, "down"):
                 return False, "sell_limit_down"
             return True, ""
 
@@ -2941,8 +2994,10 @@ class BacktestEngine:
                 if sym in positions:
                     continue
                 if sym in sold_today:
-                    _count("buy_same_day_reentry")
-                    continue
+                    if config.t_plus_1:
+                        _count("buy_same_day_reentry")
+                        continue
+                    # T+0 市场: 卖出后当日可再买
                 ok, block_reason = _can_buy(idx)
                 if not ok:
                     _count(block_reason)
@@ -3021,7 +3076,7 @@ class BacktestEngine:
                     _count("buy_exposure")
                     continue
                 entry_price = _refill_price(idx, "buy", float(entry_prices[idx]))
-                shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
+                shares = _lot_round_shares(allocation, entry_price, buy_cost_pct, config.lot_size)
                 entry_value = shares * entry_price * (1 + buy_cost_pct)
                 if shares <= 0:
                     _count("buy_lot_size")

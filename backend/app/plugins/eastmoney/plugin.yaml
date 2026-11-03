@@ -1,0 +1,10 @@
+# 东方财富公开行情接口插件 (非官方, push2.eastmoney.com 公开端点)。
+# 纯 HTTP REST, 无需 API Key (runtime: none)。免费接口存在限频, provider 内置节流。
+
+name: eastmoney
+display_name: "东方财富"
+runtime: none
+entry: app.plugins.eastmoney.provider:EastmoneyProvider
+check: app.plugins.eastmoney.provider:availability
+datasets: [realtime, daily, minute]
+description: "东方财富公开行情接口(非官方)。全市场实时快照(分页)、日K与1分钟K(原始价, 手/元口径)。免费接口有限频, 仅作备源/交叉验证; realtime 轮询间隔建议>=60s。"

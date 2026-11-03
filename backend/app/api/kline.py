@@ -363,8 +363,8 @@ def _get_price_limit_info(
     instrument_name: str | None,
 ) -> dict | None:
     """Return the date-aware limit rule and today's authoritative prices."""
-    if asset_type == "index":
-        return None
+    if asset_type in ("index", "crypto"):
+        return None  # 指数无涨跌幅限制; crypto 无涨跌停概念
 
     info: dict = {
         "rate": price_limit_pct(
@@ -602,7 +602,7 @@ def _latest_live_candle(
         if not qs:
             return None
         df_today, enriched_date = qs.get_enriched_today()
-    elif asset_type in {"etf", "index"}:
+    elif asset_type in {"etf", "index", "crypto"}:
         df_today, enriched_date = request.app.state.repo.get_enriched_latest_asset(
             asset_type, refresh=refresh_asset,
         )

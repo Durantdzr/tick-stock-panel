@@ -60,13 +60,13 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             LIST_FACTORS,
             "检索可用因子目录 (约 100 个)。返回因子 id、中文名、分组、公式说明、"
             "依赖列与适用资产, 用于挑选合法的评分字段与信号依赖。可按 asset_type "
-            "(stock/etf) 过滤, stable_only=true 时只返回稳定因子。",
+            "(stock/etf/crypto) 过滤, stable_only=true 时只返回稳定因子。",
             {
                 "type": "object",
                 "properties": {
                     "asset_type": {
                         "type": "string",
-                        "enum": ["stock", "etf"],
+                        "enum": ["stock", "etf", "crypto"],
                         "description": "按适用资产过滤; 缺省返回全部",
                     },
                     "stable_only": {
@@ -122,7 +122,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     },
                     "asset_type": {
                         "type": "string",
-                        "enum": ["stock", "etf"],
+                        "enum": ["stock", "etf", "crypto"],
                         "description": "资产类型; 缺省 stock",
                     },
                 },
@@ -212,6 +212,11 @@ def run_backtest(
     from app.backtest.strategy import StrategyBacktestConfig
     from app.backtest.worker import make_worker_task, run_worker_task
     from app.services.heavy_job_limiter import shared_heavy_job_limiter
+    from app.services.trading_rules import deny_reason, is_feature_enabled
+
+    # 该工具直连 worker, 绕过 API 层守卫 — 这里是 crypto 等市场的唯一防线。
+    if not is_feature_enabled(asset_type, "backtest"):
+        raise ValueError(deny_reason(asset_type, "backtest") or f"{asset_type} 回测未开放")
 
     # 缺省结束日用北京日期; 服务器本地 date.today() 会在 UTC/美西主机少取一天。
     end_date = date.fromisoformat(end) if end else cn_today()

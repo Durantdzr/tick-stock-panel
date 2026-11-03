@@ -281,8 +281,8 @@ function StockSearchBox({
   const [activeIdx, setActiveIdx] = useState(-1)
 
   const search = useQuery({
-    queryKey: QK.instrumentSearch(query, 'stock,etf,index'),
-    queryFn: () => api.instrumentSearch(query, 20, 'stock,etf,index'),
+    queryKey: QK.instrumentSearch(query, 'stock,etf,index,crypto'),
+    queryFn: () => api.instrumentSearch(query, 20, 'stock,etf,index,crypto'),
     enabled: query.trim().length > 0,
     staleTime: 30_000,
   })
@@ -2055,7 +2055,7 @@ export function Watchlist() {
                               width={iw - 4}
                               height={ih}
                               yMode={intradayYMode}
-                              limitRate={r.asset_type === 'etf' || r.asset_type === 'index' ? null : boardLimitRate(r.symbol)}
+                              limitRate={r.asset_type !== 'stock' ? null : boardLimitRate(r.symbol)}
                               auction={auctionData[r.symbol] ?? null}
                               volume={intradayResolved.volume}
                               auctionWidth={intradayResolved.auctionWidth}

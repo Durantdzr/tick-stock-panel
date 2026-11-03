@@ -28,6 +28,11 @@ def cn_today() -> date:
     return datetime.now(CN_TZ).date()
 
 
+def is_crypto_asset(asset_type: str | None) -> bool:
+    """加密货币资产 (7x24, 无交易日/交易时段概念, 无 A 股日历依赖)。"""
+    return asset_type == "crypto"
+
+
 def in_continuous_session(now: datetime | None = None) -> bool:
     """A股连续竞价时段 (北京时间): 9:30-11:30 / 13:00-15:00, 仅工作日。"""
     now = now or cn_now()

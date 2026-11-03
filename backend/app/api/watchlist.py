@@ -476,15 +476,19 @@ def watchlist_enriched(
     symbols = [r["symbol"] for r in entries]
     if not symbols:
         return {"rows": [], "as_of": None, "elapsed_ms": 0,
-                "dates": {"stock": None, "etf": None, "index": None}}
+                "dates": {"stock": None, "etf": None, "index": None, "crypto": None}}
 
     # 按资产拆分自选 symbol; ETF enriched 是独立缓存, 仅自选真的含 ETF 才去加载
     # (避免无 ETF 用户在缓存冷启动时触发 ETF 全量懒加载)
     etf_set = repo.get_etf_symbol_set()
     index_set = repo.get_index_symbol_set()
+    crypto_set = repo.get_crypto_symbol_set()
     etf_symbols = [s for s in symbols if s in etf_set]
     index_symbols = [s for s in symbols if s not in etf_set and s in index_set]
-    stock_symbols = [s for s in symbols if s not in etf_set and s not in index_set]
+    crypto_symbols = [s for s in symbols
+                      if s not in etf_set and s not in index_set and s in crypto_set]
+    stock_symbols = [s for s in symbols
+                     if s not in etf_set and s not in index_set and s not in crypto_set]
 
     df_e, cache_date = repo.get_enriched_latest()
 
@@ -524,10 +528,22 @@ def watchlist_enriched(
             df_idx = idx_watchlist_df
         df = df_idx if df.is_empty() else pl.concat([df, df_idx], how="diagonal_relaxed")
 
-    # as_of 取三类缓存中较旧者
-    dates = [d for d in (cache_date if stock_symbols else None, etf_date, index_date) if d is not None]
+    # 加密货币行合并 (同 ETF/指数分支); 无换手率/涨跌停列, null 降级
+    crypto_date = None
+    if crypto_symbols:
+        df_c_all, crypto_date = repo.get_enriched_latest_asset("crypto")
+        c_watchlist_df = pl.DataFrame({"symbol": crypto_symbols})
+        if not df_c_all.is_empty():
+            df_c = c_watchlist_df.join(df_c_all, on="symbol", how="left")
+        else:
+            df_c = c_watchlist_df
+        df = df_c if df.is_empty() else pl.concat([df, df_c], how="diagonal_relaxed")
+
+    # as_of 取各类缓存中较旧者
+    dates = [d for d in (cache_date if stock_symbols else None, etf_date, index_date,
+                         crypto_date if crypto_symbols else None) if d is not None]
     as_of = min(dates) if dates else None
-    # 按资产类型的行情日期 (ISO): as_of 是三类取 min 的全局值, 分不清哪类过期。
+    # 按资产类型的行情日期 (ISO): as_of 是各类取 min 的全局值, 分不清哪类过期。
     # 前端分时缩略图续画据此判定「该类行情是否为当日」—— ETF 未开实时拉取时
     # etf 缓存停在旧日, 过期 close 拼到当日分钟K尾部会画出错价 (issue 场景)。
     # None = 未加载/无缓存, 前端一律按不新鲜处理 (fail-closed)。
@@ -535,6 +551,7 @@ def watchlist_enriched(
         "stock": str(cache_date) if cache_date else None,
         "etf": str(etf_date) if etf_date else None,
         "index": str(index_date) if index_date else None,
+        "crypto": str(crypto_date) if (crypto_symbols and crypto_date) else None,
     }
     if df.is_empty():
         return {"rows": [], "as_of": str(as_of) if as_of else None,

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ArrowUpRight, Check, Database, Gauge, GripVertical, Info, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Timer } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
-import { api, type AlertEvent, type DataStatus } from '@/lib/api'
+import { api, type AlertEvent, type DashboardMarket, type DataStatus } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { DimensionMembersDialog, type DimensionMembersTarget } from '@/components/DimensionMembersDialog'
 import { useDataStatus, useCapabilities, useSettings, usePreferences } from '@/lib/useSharedQueries'
@@ -17,7 +17,7 @@ import { scoreColor, quoteAge } from '@/components/dashboard/shared'
 import { DashboardGrid } from '@/components/dashboard/DashboardGrid'
 import { AddWidgetPanel } from '@/components/dashboard/AddWidgetPanel'
 import { useDashboardLayout } from '@/components/dashboard/useDashboardLayout'
-import { DEFAULT_LAYOUT, widgetDef, type WidgetCtx } from '@/components/dashboard/registry'
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_CRYPTO, widgetDef, widgetsForMarket, widgetVisibleIn, type WidgetCtx } from '@/components/dashboard/registry'
 import { cloneItems, GRID_COLS, type WidgetType } from '@/components/dashboard/layout'
 
 /** 兼容旧后端的预热标志; 同步/自动修复也会使统计暂不可用。 */
@@ -51,15 +51,26 @@ export function Dashboard() {
   } | null>(null)
   // 板块成分股弹窗 (概念/行业热度卡片行点击)
   const [dimensionTarget, setDimensionTarget] = useState<DimensionMembersTarget | null>(null)
+  // 偏好需先于布局 hook: 当前市场决定读取哪个布局键 (stock/crypto 分市场存储)
+  const prefs = usePreferences()
+  // 主界面市场: 后端偏好持久化, 切换后看板完全切换 (数据/布局/组件集)
+  const market = (prefs.data?.dashboard_market ?? 'stock') as DashboardMarket
   // 自定义网格布局(持久化 hook: 后端偏好加载 + 本地改动防抖落盘);
   // 注意必须在早退 return 之前 — Hooks 顺序不可随数据加载状态变化。
-  const { items: dashItems, setItems: setDashItems } = useDashboardLayout()
+  const { items: dashItems, setItems: setDashItems } = useDashboardLayout(market)
+  // 交易规则注册表: 各市场功能可用性 (与后端 fail-closed 限制同源, 前端不硬编码)
+  const rulesQ = useQuery({
+    queryKey: QK.marketRules,
+    queryFn: api.marketRules,
+    staleTime: 5 * 60_000,
+  })
   // 布局编辑态: 入口与控制组(添加组件/恢复默认/完成)在头部「重载」右侧
   const [dashEditing, setDashEditing] = useState(false)
   const placedTypes = useMemo(() => new Set(dashItems.map(it => it.t)), [dashItems])
   const resetDashLayout = useCallback(() => {
-    setDashItems(cloneItems(DEFAULT_LAYOUT))
-  }, [setDashItems])
+    const defaults = market === 'crypto' ? DEFAULT_LAYOUT_CRYPTO : DEFAULT_LAYOUT
+    setDashItems(cloneItems(defaults))
+  }, [setDashItems, market])
   /** 追加组件: 放到当前布局最底部; ext-link 用唯一 id 支持多实例 */
   const addDashWidget = useCallback((t: WidgetType, props?: Record<string, string>) => {
     const def = widgetDef(t)
@@ -78,8 +89,8 @@ export function Dashboard() {
     refetchInterval: (q: any) => (isDataStatusPending(q.state.data) ? 5_000 : false),
   })
   const overview = useQuery({
-    queryKey: QK.overviewMarket(selectedDate),
-    queryFn: () => api.overviewMarket(selectedDate),
+    queryKey: QK.overviewMarket(selectedDate, market),
+    queryFn: () => api.overviewMarket(selectedDate, market),
     staleTime: 5_000,
     placeholderData: (prev) => prev,
   })
@@ -91,7 +102,6 @@ export function Dashboard() {
   const isSealedDegrade = !hasDepth || !sealedReady
   // 空态引导文案按当前数据源分流: TickFlow 源提"免费服务器", 其他源提"当前数据源",
   // 弱化与默认 TickFlow 的隐式绑定 (None 档/免费 Key 等 TickFlow 概念仅在其被选中时出现)
-  const prefs = usePreferences()
   const dataSourceList = useQuery({
     queryKey: QK.dataSources,
     queryFn: api.dataSources,
@@ -151,6 +161,16 @@ export function Dashboard() {
     }
   }, [fetchSucceeded, qc])
 
+  // 市场切换: 持久化偏好并重置上个市场上下文 (历史日期仅 A 股有语义)
+  const switchMarket = useCallback((next: DashboardMarket) => {
+    if (next === market) return
+    setSelectedDate(undefined)
+    setDashEditing(false)
+    api.saveDashboardMarket(next)
+      .then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
+      .catch(() => { /* request() 已提示错误 */ })
+  }, [market, qc])
+
   // 组件重新挂载时(从其他页面切回)恢复正在运行的同步任务进度。
   // 原因: fetchJobId 是组件内状态, 切走页面时组件卸载、状态丢失, 切回后进度卡片消失。
   // 修复: 挂载时若无本地数据且未跟踪任何 job, 查一次后端是否有 active job, 有则接管。
@@ -174,6 +194,21 @@ export function Dashboard() {
         overview.refetch().finally(() => setManualFetching(false))
       })
   }
+
+  // 当前市场可见组件: registry 静态 markets 声明 + 后端规则 feature 键叠加门控
+  const marketFeatures = rulesQ.data?.markets?.[market]?.features
+  const marketWidgetDefs = useMemo(
+    () => widgetsForMarket(market).filter(d => !d.feature || marketFeatures?.[d.feature] !== false),
+    [market, marketFeatures],
+  )
+  const visibleItems = useMemo(
+    () => dashItems.filter((it) => {
+      const def = widgetDef(it.t)
+      return widgetVisibleIn(def, market) && (!def?.feature || marketFeatures?.[def.feature] !== false)
+    }),
+    [dashItems, market, marketFeatures],
+  )
+  const allowedWidgetTypes = useMemo(() => new Set(marketWidgetDefs.map(d => d.id)), [marketWidgetDefs])
 
   if (overview.isLoading && !data) {
     return (
@@ -203,9 +238,11 @@ export function Dashboard() {
   // 实时模式: none / watchlist / full_market。
   // watchlist 模式仅自选 ≤5 只实时, 看板呈现的大盘数据实为盘后快照, 需提示避免误读。
   const quoteMode = data.quote_status?.mode as ('none' | 'watchlist' | 'full_market') | undefined
+  const isCrypto = market === 'crypto'
 
   // 网格组件渲染上下文: 数据切片 + 交互回调统一由页面层供给
   const widgetCtx: WidgetCtx = {
+    market,
     data,
     score,
     hasDepth,
@@ -222,8 +259,8 @@ export function Dashboard() {
 
   return (
     <div className="min-h-full bg-base p-1.5">
-      {/* 无本地数据常驻引导卡片 —— 一键触发盘后管道获取数据(无 Key 也可) */}
-      {hasNoData && (
+      {/* 无本地数据常驻引导卡片 —— 一键触发盘后管道获取数据(无 Key 也可); A 股专用管道, crypto 市场不展示 */}
+      {hasNoData && !isCrypto && (
         <FetchDataCard
           isFetching={isFetching}
           isStarting={startFetch.isPending}
@@ -237,7 +274,7 @@ export function Dashboard() {
       )}
       {/* 首次使用自动弹窗(同会话仅一次) */}
       <AnimatePresence>
-        {showWelcomeModal && (
+        {showWelcomeModal && !isCrypto && (
           <WelcomeFetchModal
             isTickflowProvider={isTickflowProvider}
             providerLabel={providerLabel}
@@ -258,19 +295,48 @@ export function Dashboard() {
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-accent" />
           <h1 className="text-[16px] leading-6 font-semibold text-foreground">市场看板</h1>
-          <span
-            className="rounded-full border px-2 py-0.5 text-[10px] font-medium"
-            style={{
-              color: scoreColor(score),
-              borderColor: `${scoreColor(score)}40`,
-              background: `${scoreColor(score)}14`,
-            }}
-          >
-            {data.emotion.label} · {score}
-          </span>
+          {/* 市场切换: A股 / 加密货币 (后端交易规则注册表声明的看板市场) */}
+          <div className="flex overflow-hidden rounded-btn border border-border" role="tablist" aria-label="切换市场">
+            {([['stock', 'A股'], ['crypto', '加密货币']] as [DashboardMarket, string][]).map(([m, label]) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={market === m}
+                onClick={() => switchMarket(m)}
+                className={`px-2 py-0.5 text-[11px] transition-colors ${
+                  market === m
+                    ? 'bg-accent font-medium text-white'
+                    : 'bg-elevated text-secondary hover:text-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {isCrypto ? (
+            <span className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+              7×24{data.data_window === '24h_rolling' ? ' · 24h滚动口径' : ''}
+            </span>
+          ) : (
+            <span
+              className="rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{
+                color: scoreColor(score),
+                borderColor: `${scoreColor(score)}40`,
+                background: `${scoreColor(score)}14`,
+              }}
+            >
+              {data.emotion?.label ?? '—'} · {score}
+            </span>
+          )}
+          {isCrypto && data.data_source === 'none' && (
+            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-warning">
+              数据源不可达
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 text-[11px] text-muted">
-          {currentDate ? (
+          {!isCrypto && (currentDate ? (
             <DatePicker
               value={currentDate}
               onChange={setSelectedDate}
@@ -280,9 +346,11 @@ export function Dashboard() {
             />
           ) : (
             <span className="font-mono text-secondary">—</span>
-          )}
-          <span className="flex items-center gap-1"><Timer className="h-3 w-3" />{quoteAge(data.quote_status?.quote_age_ms)}</span>
-          <span className={quoteRunning ? 'text-accent' : 'text-warning'}>{quoteRunning ? '实时' : '非实时'}</span>
+          ))}
+          {!isCrypto && <span className="flex items-center gap-1"><Timer className="h-3 w-3" />{quoteAge(data.quote_status?.quote_age_ms)}</span>}
+          {isCrypto
+            ? <span className="text-accent">7×24 实时</span>
+            : <span className={quoteRunning ? 'text-accent' : 'text-warning'}>{quoteRunning ? '实时' : '非实时'}</span>}
           <button
             onClick={handleRefresh}
             disabled={manualFetching}
@@ -300,7 +368,7 @@ export function Dashboard() {
             </button>
           ) : (
             <>
-              <AddWidgetPanel placedTypes={placedTypes} onAdd={addDashWidget} />
+              <AddWidgetPanel placedTypes={placedTypes} onAdd={addDashWidget} allowedTypes={allowedWidgetTypes} />
               <button
                 onClick={resetDashLayout}
                 className="inline-flex items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground"
@@ -319,7 +387,7 @@ export function Dashboard() {
       </div>
 
       {/* 自选实时模式提示: 大盘看板为盘后数据, 仅自选实时。避免用户误读为全市场实时。 */}
-      {quoteMode === 'watchlist' && (
+      {quoteMode === 'watchlist' && !isCrypto && (
         <div className="mb-1.5 flex items-start gap-2 rounded-card border border-amber-500/30 bg-amber-500/8 px-3 py-1.5 text-[11px] leading-relaxed">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
           <div className="min-w-0 flex-1 text-secondary">
@@ -330,7 +398,7 @@ export function Dashboard() {
         </div>
       )}
 
-      <DashboardGrid ctx={widgetCtx} items={dashItems} onItemsChange={setDashItems} editing={dashEditing} />
+      <DashboardGrid ctx={widgetCtx} items={visibleItems} onItemsChange={setDashItems} editing={dashEditing} />
 
       <StockPreviewDialog
         symbol={previewStock?.symbol ?? null}

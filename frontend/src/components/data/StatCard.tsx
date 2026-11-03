@@ -18,6 +18,8 @@ export const CARD_META: Record<string, {
   enriched:    { capKey: '',                        missingCapName: '' },
   // ETF 复用日K批量能力(免费档即可),缺能力时随日K卡提示,不单独显示徽章
   etf:         { capKey: 'kline.daily.batch',       missingCapName: '' },
+  // crypto 走币安公开行情(免 Key), 无套餐能力门控
+  crypto:      { capKey: '',                        missingCapName: '' },
   minute:      { capKey: 'kline.minute.batch',      missingCapName: '分钟 K(批量)' },
   financials:  { capKey: 'financial',               missingCapName: '财务数据' },
   regime:      { capKey: '',                        missingCapName: '' },

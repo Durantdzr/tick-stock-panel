@@ -1,0 +1,12 @@
+# 币安现货+U本位合约公开行情插件 (api.binance.com / fapi.binance.com)。
+# 纯 HTTP REST, 公共行情无需 API Key (可选配置 BINANCE_API_KEY 提升限额)。
+# asset_types: [crypto] — 声明后不进入 A 股 7 能力路由候选, 由 crypto 同步服务专用。
+
+name: binance
+display_name: "币安 Binance"
+runtime: none
+entry: app.plugins.binance.provider:BinanceProvider
+check: app.plugins.binance.provider:availability
+datasets: [daily, minute, realtime]
+asset_types: [crypto]
+description: "币安公开行情(现货+U本位合约)。日K/1分钟K/24hr快照, 覆盖白名单内 USDT 交易对; 合约标的内部以 .P 后缀命名。volume 为基础币数量(非股票'手'口径), amount 为 USDT 计价。"
