@@ -1029,29 +1029,24 @@ def _push_phase_change_alert(data_dir) -> None:
     logger.info("phase change alert: %s (severity=%s)", msg, severity)
 
 
-def _run_tracked(fn, job_label: str) -> bool:
-    """调度触发时包装 JobStore 跟踪，确保同步历史有记录。
+class MarketSyncFailedError(Exception):
+    """市场同步 (crypto/us) 失败: run_*_sync 内部吞异常返回 ok=False,
+    任务体将其翻译为本异常, 让任务库记 failed 而非伪装成功。"""
 
-    单飞: 若已有活跃(pending∨running)任务(手动同步中), 本次调度直接跳过, 不并发。
-    重任务执行槽: 再挡一层僵尸并发(reap 后线程仍活时不得并行写 parquet)。
-    返回 True 仅表示任务已成功并且执行槽已释放。
+
+def _tracked_sync_flow(fn, job_label: str, err_prefix: str, job_id: str) -> bool:
+    """create()+try_acquire_run_slot 之后到 release 为止的完整执行流程。
+
+    err_prefix: 失败/日志前缀 ("scheduled" / 触发来源), 既有 scheduled
+    记录文案保持不变。市场同步的 ok=False 经 MarketSyncFailedError 在这里
+    记 failed。调用方已占用执行槽, 本函数 finally 释放。
     """
     from app.services.pipeline_jobs import (
         JobCancelledError,
         job_store,
         release_run_slot,
         run_with_capacity,
-        try_acquire_run_slot,
     )
-
-    job_id, is_new = job_store.create()
-    if not is_new:
-        logger.info("scheduled %s 跳过: 已有活跃任务在运行 (job_id=%s)", job_label, job_id)
-        return False
-    if not try_acquire_run_slot(job_id):
-        logger.warning("scheduled %s 跳过: 重任务执行槽被占用(疑似上次任务卡死)", job_label)
-        job_store.fail(job_id, f"scheduled {job_label} skipped: 已有数据任务在运行")
-        return False
 
     def progress(stage: str, pct: int, msg: str, stage_pct: int | None = None,
                  skip_log: bool = False) -> None:
@@ -1062,16 +1057,175 @@ def _run_tracked(fn, job_label: str) -> bool:
         result = run_with_capacity(job_id, lambda: fn(on_progress=progress))
         job_store.succeed(job_id, result)
         succeeded = True
-        logger.info("scheduled %s completed: job_id=%s", job_label, job_id)
+        logger.info("%s %s completed: job_id=%s", err_prefix, job_label, job_id)
+    except MarketSyncFailedError as e:
+        logger.warning("%s %s failed: %s (job_id=%s)", err_prefix, job_label, e, job_id)
+        job_store.fail(job_id, str(e))
     except JobCancelledError:
         # 已由 terminate() 标记失败(卡死/手动取消), 拉取线程在分块回调处自行退出
-        logger.warning("scheduled %s cancelled: job_id=%s", job_label, job_id)
+        logger.warning("%s %s cancelled: job_id=%s", err_prefix, job_label, job_id)
     except Exception:
-        logger.exception("scheduled %s failed: job_id=%s", job_label, job_id)
-        job_store.fail(job_id, f"scheduled {job_label} failed")
+        logger.exception("%s %s failed: job_id=%s", err_prefix, job_label, job_id)
+        job_store.fail(job_id, f"{err_prefix} {job_label} failed")
     finally:
         release_run_slot(job_id)
     return succeeded
+
+
+def _run_tracked(fn, job_label: str, *, trigger: str = "daily", label: str | None = None) -> bool:
+    """调度触发时包装 JobStore 跟踪，确保同步历史有记录。
+
+    单飞: 若已有活跃(pending∨running)任务(手动同步中), 本次调度直接跳过, 不并发。
+    重任务执行槽: 再挡一层僵尸并发(reap 后线程仍活时不得并行写 parquet)。
+    返回 True 仅表示任务已成功并且执行槽已释放。
+
+    label/trigger: 仅市场同步路径传入 (label=crypto_sync/us_sync, 供
+    /api/pipeline/jobs 按市场过滤); A股 既有调用不传, 记录保持无标注原语义。
+    """
+    from app.services.pipeline_jobs import (
+        job_store,
+        try_acquire_run_slot,
+    )
+
+    if label is not None:
+        job_id, is_new = job_store.create(long_running=True, label=label, trigger=trigger)
+    else:
+        job_id, is_new = job_store.create()
+    if not is_new:
+        logger.info("scheduled %s 跳过: 已有活跃任务在运行 (job_id=%s)", job_label, job_id)
+        return False
+    if not try_acquire_run_slot(job_id):
+        logger.warning("scheduled %s 跳过: 重任务执行槽被占用(疑似上次任务卡死)", job_label)
+        job_store.fail(job_id, f"scheduled {job_label} skipped: 已有数据任务在运行")
+        return False
+
+    return _tracked_sync_flow(fn, job_label, "scheduled", job_id)
+
+
+def _run_market_sync(repo, market: str, *, with_minute: bool,
+                     skip_non_trading_day: bool = False, on_progress=None) -> dict:
+    """统一市场同步任务体 (crypto/us), 定时/自动/手动三路共用。
+
+    run_*_sync 内部吞异常返回 ok=False —— 这里翻译成异常, 让
+    _tracked_sync_flow 记 failed 而不是 succeed。
+    """
+    if market == "crypto":
+        from app.services import crypto_sync
+        result = crypto_sync.run_crypto_sync(repo, with_minute=with_minute,
+                                             on_progress=on_progress)
+    elif market == "us":
+        from app.services import us_sync
+        result = us_sync.run_us_sync(repo, with_minute=with_minute,
+                                     skip_non_trading_day=skip_non_trading_day,
+                                     on_progress=on_progress)
+    else:
+        raise ValueError(f"未知市场: {market!r}")
+    if not result.get("ok"):
+        raise MarketSyncFailedError(f"{market} 同步失败: {result.get('error')}")
+    return result
+
+
+def _run_market_tracked(fn, market: str, *, trigger: str) -> bool:
+    """市场同步专用 tracked 入口: 与 _run_tracked 同语义, 但 create 时带
+    label/trigger 标注 (label=f"{market}_sync")。"""
+    return _run_tracked(fn, f"{market}_sync", trigger=trigger, label=f"{market}_sync")
+
+
+def start_market_sync(repo, market: str, *, with_minute: bool = False) -> str | None:
+    """手动市场同步入口 (API 层): 创建 tracked job 并在后台线程执行。
+
+    忙时 (任务库单飞/执行槽被占) 返回 None, 调用方映射 409;
+    否则返回 job_id, 进度经 GET /api/pipeline/jobs 查询。
+    """
+    import threading
+
+    from app.services.pipeline_jobs import job_store, try_acquire_run_slot
+
+    def _task(on_progress=None):
+        return _run_market_sync(repo, market, with_minute=with_minute,
+                                on_progress=on_progress)
+
+    label = f"{market}_sync"
+    job_id, is_new = job_store.create(long_running=True, label=label, trigger="manual")
+    if not is_new:
+        return None
+    if not try_acquire_run_slot(job_id):
+        logger.warning("manual %s 跳过: 重任务执行槽被占用", label)
+        job_store.fail(job_id, "已有数据任务在运行")
+        return None
+    threading.Thread(target=_tracked_sync_flow, args=(_task, label, "manual", job_id),
+                     name=f"{market}-sync", daemon=True).start()
+    return job_id
+
+
+# ── 市场自动同步 (crypto/us 分钟级档位) ──────────────────────────────────
+
+CRYPTO_AUTO_SYNC_JOB_ID = "crypto_auto_sync"
+US_AUTO_SYNC_JOB_ID = "us_auto_sync"
+
+
+def _us_auto_sync_allowed() -> bool:
+    """us 自动同步门控: XNYS 交易日 且 美东常规时段 (09:30-16:00, DST 自适应)。
+
+    盘后由 us_daily_sync (16:35 ET) 兜底, 盘中门控避免夜间空跑; 与 A股
+    09:10/15:35 日间任务天然零重叠 (盘中 ≈ 北京 21:30-05:00)。
+    """
+    from app import market_time
+    from app.services import us_trading_day
+
+    return market_time.us_in_session() and us_trading_day.is_us_trading_day(us_trading_day.us_today())
+
+
+def _register_market_auto_sync_job(scheduler, repo, market: str) -> None:
+    """注册/移除市场自动同步 interval job (start_scheduler 与 settings API 共用)。
+
+    disabled → remove_job (容错从未注册); enabled → IntervalTrigger 档位。
+    忙时静默跳过 (不建 job 记录): interval 档位下全局单飞被 A股 长任务占用时
+    反复触发会产生失败记录刷屏, 与 us 盘中门控同语义 (只留 info 日志)。
+    """
+    prefs = _prefs.get_market_auto_sync(market)
+    job_id = f"{market}_auto_sync"
+    if not prefs["enabled"]:
+        try:
+            scheduler.remove_job(job_id)
+            logger.info("auto %s_sync disabled (job removed)", market)
+        except Exception:  # noqa: BLE001 — job 本就不存在 (从未开启/已被移除)
+            pass
+        return
+
+    def _wrapped():
+        from app.services.pipeline_jobs import job_store
+
+        if job_store.active_id() is not None:
+            logger.info("auto %s_sync 跳过: 已有活跃数据任务", market)
+            return
+        if market == "us" and not _us_auto_sync_allowed():
+            logger.debug("auto us_sync 跳过: 非美股交易日盘中")
+            return
+        _run_tracked(
+            lambda on_progress=None: _run_market_sync(
+                repo, market, with_minute=True,
+                skip_non_trading_day=(market == "us")),
+            f"{market}_sync", trigger="auto", label=f"{market}_sync")
+
+    scheduler.add_job(
+        _wrapped,
+        trigger=IntervalTrigger(minutes=prefs["interval_minutes"]),
+        id=job_id,
+        misfire_grace_time=60,  # interval 档位不补跑: 迟到超过 1 分钟直接丢弃本次
+        replace_existing=True,
+    )
+    logger.info("auto %s_sync enabled @every %dmin", market, prefs["interval_minutes"])
+
+
+def _register_crypto_auto_sync_job(scheduler, repo) -> None:
+    """crypto 自动同步注册 (7×24 无门控)。供 start_scheduler 与 settings API 共用。"""
+    _register_market_auto_sync_job(scheduler, repo, "crypto")
+
+
+def _register_us_auto_sync_job(scheduler, repo) -> None:
+    """us 自动同步注册 (仅交易日盘中门控在任务体内)。供 start_scheduler 与 settings API 共用。"""
+    _register_market_auto_sync_job(scheduler, repo, "us")
 
 
 def _scheduled_pipeline_task(pipeline_fn) -> None:
@@ -1447,9 +1601,9 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
     # 加密货币 (crypto) 每日同步: 7x24 市场, 每日 08:05 (UTC 日线收盘 = 北京 08:00
     # 之后) 增量拉取白名单日K并重算 enriched。crypto 无交易日概念, 不用 mon-fri;
     # 数据源不可用 (如 binance 网络受限) 时任务失败记录在日志与 /api/crypto/status。
-    def _crypto_sync_task():
+    def _crypto_sync_task(on_progress=None):
         from app.services import crypto_sync
-        result = crypto_sync.run_crypto_sync(repo)
+        result = crypto_sync.run_crypto_sync(repo, on_progress=on_progress)
         if result.get("ok"):
             logger.info("crypto 定时同步完成: %s", result)
         else:
@@ -1457,12 +1611,39 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         return result
 
     scheduler.add_job(
-        lambda: _run_tracked(_crypto_sync_task, "crypto_sync"),
+        lambda: _run_tracked(_crypto_sync_task, "crypto_sync",
+                             trigger="daily", label="crypto_sync"),
         trigger=CronTrigger(hour=8, minute=5, timezone="Asia/Shanghai"),
         id="crypto_daily_sync",
         misfire_grace_time=3600,
         replace_existing=True,
     )
+
+    # 美股 (us) 每日同步: 美东 16:35 (收盘后, DST 由 trigger 时区自动处理),
+    # mon-fri 触发 + 任务体内 XNYS 节假日门控跳过。
+    def _us_sync_task(on_progress=None):
+        from app.services import us_sync
+        result = us_sync.run_us_sync(repo, skip_non_trading_day=True, on_progress=on_progress)
+        if result.get("skipped") == "us_holiday":
+            logger.info("美股定时同步跳过: 美东节假日")
+        elif result.get("ok"):
+            logger.info("美股定时同步完成: %s", result)
+        else:
+            logger.warning("美股定时同步失败: %s", result)
+        return result
+
+    scheduler.add_job(
+        lambda: _run_tracked(_us_sync_task, "us_sync",
+                             trigger="daily", label="us_sync"),
+        trigger=CronTrigger(hour=16, minute=35, day_of_week="mon-fri",
+                            timezone="America/New_York"),
+        id="us_daily_sync",
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+
+    _register_crypto_auto_sync_job(scheduler, repo)
+    _register_us_auto_sync_job(scheduler, repo)
 
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",

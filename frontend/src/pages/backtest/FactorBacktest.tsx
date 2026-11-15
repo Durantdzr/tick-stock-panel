@@ -88,7 +88,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
   const queryClient = useQueryClient()
   const [factorName, setFactorName] = useState(initialFactorName)
   const [symbols, setSymbols] = useState('')
-  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto'>('stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto' | 'us'>('stock')
   const [start, setStart] = useState(THREE_MONTHS_AGO)
   const [end, setEnd] = useState(TODAY)
   const [nGroups, setNGroups] = useState(5)
@@ -232,7 +232,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
         <div>
           <label className="text-xs font-medium text-secondary block mb-1.5">资产类型</label>
           <div className="inline-flex h-8 rounded-btn border border-border overflow-hidden mb-2">
-            {(['stock', 'etf', 'crypto'] as const).map(t => (
+            {(['stock', 'etf', 'crypto', 'us'] as const).map(t => (
               <button
                 key={t}
                 type="button"
@@ -240,7 +240,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
                 className={`h-full px-3 text-xs font-medium transition-colors cursor-pointer
                   ${assetType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'}`}
               >
-                {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '加密货币'}
+                {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : t === 'crypto' ? '加密货币' : '美股'}
               </button>
             ))}
           </div>

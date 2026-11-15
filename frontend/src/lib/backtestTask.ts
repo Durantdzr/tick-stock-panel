@@ -211,7 +211,7 @@ export function startBacktest(params: {
   overrides?: Record<string, any> | null
   mode?: 'position' | 'full'
   holding_days?: number
-  asset_type?: 'stock' | 'etf' | 'crypto'
+  asset_type?: 'stock' | 'etf' | 'crypto' | 'us'
   minute_fill?: boolean
   regime_filter?: { states?: string[]; min_score?: number } | null
   /** 忽略服务端同参数任务的结果缓存 (5 分钟), 必然重新计算; 重连/取消按 qs 对齐同一任务 */

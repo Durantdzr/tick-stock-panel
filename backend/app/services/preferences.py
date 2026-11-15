@@ -376,6 +376,18 @@ def get_crypto_data_provider() -> str:
     return "binance"
 
 
+def get_us_data_provider() -> str:
+    """美股数据源 (默认 eastmoney_us 插件)。非法值回退默认并告警 (fail-closed 同上)。"""
+    provider = str(load().get("us_data_provider", "eastmoney_us") or "eastmoney_us").lower()
+    allowed = _allowed_data_providers()
+    if provider in allowed:
+        return provider
+    logger.warning(
+        "数据源偏好 us_data_provider=%r 不在可用列表 %s, 回退 eastmoney_us",
+        provider, sorted(allowed))
+    return "eastmoney_us"
+
+
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
 
 def get_pipeline_pull_a_share() -> bool:
@@ -721,6 +733,57 @@ def set_review_schedule(enabled: bool, hour: int, minute: int) -> dict:
         h, m = 15, 0
     save({"review_schedule": {"enabled": bool(enabled), "hour": h, "minute": m}})
     return {"enabled": bool(enabled), "hour": h, "minute": m}
+
+
+# ── 市场自动同步 (crypto/us 分钟级档位) ──────────────────────────────────
+
+AUTO_SYNC_INTERVALS: tuple[int, ...] = (5, 15, 30, 60)
+_AUTO_SYNC_MARKETS: tuple[str, ...] = ("crypto", "us")
+_DATA_PAGE_MARKETS: tuple[str, ...] = ("stock", "crypto", "us")
+
+
+def get_market_auto_sync(market: str) -> dict:
+    """市场自动同步偏好 {"enabled": bool, "interval_minutes": int}。默认关闭。
+
+    存量非法值 fail-closed 回退: interval 不在档位集合 → 15, enabled 强转 bool。
+    """
+    d = load().get(f"{market}_auto_sync")
+    if not isinstance(d, dict):
+        d = {}
+    interval = d.get("interval_minutes", 15)
+    try:
+        interval = int(interval)
+    except (TypeError, ValueError):
+        interval = 15
+    if interval not in AUTO_SYNC_INTERVALS:
+        interval = 15
+    return {"enabled": bool(d.get("enabled", False)), "interval_minutes": interval}
+
+
+def set_market_auto_sync(market: str, enabled: bool, interval_minutes: int) -> dict:
+    """保存市场自动同步偏好。非法市场/档位抛 ValueError (API 层映射 422)。"""
+    if market not in _AUTO_SYNC_MARKETS:
+        raise ValueError(f"市场自动同步仅支持 {'/'.join(_AUTO_SYNC_MARKETS)}, 收到 {market!r}")
+    if interval_minutes not in AUTO_SYNC_INTERVALS:
+        raise ValueError(
+            f"自动同步档位必须是 {', '.join(map(str, AUTO_SYNC_INTERVALS))} 分钟")
+    save({f"{market}_auto_sync": {"enabled": bool(enabled),
+                                  "interval_minutes": int(interval_minutes)}})
+    return get_market_auto_sync(market)
+
+
+def get_data_page_market() -> str:
+    """数据页当前市场 (stock/crypto/us)。存量非法值回退 stock。"""
+    market = load().get("data_page_market", "stock")
+    return market if market in _DATA_PAGE_MARKETS else "stock"
+
+
+def set_data_page_market(market: str) -> str:
+    """保存数据页市场选择。非法值抛 ValueError (API 层映射 422)。"""
+    if market not in _DATA_PAGE_MARKETS:
+        raise ValueError(f"data_page_market 必须是 {'/'.join(_DATA_PAGE_MARKETS)}")
+    save({"data_page_market": market})
+    return market
 
 
 # 复盘系统提示词长度上限: 默认模板约 2.4k 字符, 留足自定义余量同时防止误存超长文本
@@ -1373,7 +1436,7 @@ def set_dashboard_layout(value: dict | None) -> dict | None:
 
 
 # 主界面市场切换: 布局/当前市场按资产类型分键存储 (crypto 布局独立于 A 股)
-_LAYOUT_BLOB_KEYS = {"stock": "dashboard_layout", "crypto": "dashboard_layout_crypto"}
+_LAYOUT_BLOB_KEYS = {"stock": "dashboard_layout", "crypto": "dashboard_layout_crypto", "us": "dashboard_layout_us"}
 _DASHBOARD_MARKET_DEFAULT = "stock"
 
 

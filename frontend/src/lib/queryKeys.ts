@@ -95,7 +95,7 @@ export const QK = {
   guardianRuns:         ['backtest-guardian-runs'] as const,
   labReport:            ['backtest-lab-report'] as const,
   researchCandidates:  ['research-candidates'] as const,
-  strategyLinkOptions: (assetType?: 'stock' | 'etf' | 'crypto') => assetType
+  strategyLinkOptions: (assetType?: 'stock' | 'etf' | 'crypto' | 'us') => assetType
     ? ['strategy-link-options', assetType] as const
     : ['strategy-link-options'] as const,
   strategyDetail:       (id: string) => ['strategy-detail', id] as const,
@@ -106,6 +106,8 @@ export const QK = {
   /** 分钟数据缺口体检 (发现本地分区中不完整的 标的×交易日) */
   minuteGaps:           ['minute-gaps'] as const,
   pipelineJobs:         ['pipeline-jobs'] as const,
+  /** 市场同步日志 (label=crypto_sync/us_sync; 独立键避免与 A股 全量历史串缓存) */
+  marketSyncJobs:       (label: string) => ['pipeline-jobs', label] as const,
   pipelineJob:          (id: string) => ['pipeline-job', id] as const,
   extData:              ['ext-data'] as const,
   extDataRows:          (id: string, date?: string, limit?: number, columns?: string) => ['ext-data-rows', id, date, limit, columns] as const,

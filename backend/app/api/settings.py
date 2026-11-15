@@ -705,6 +705,9 @@ def get_preferences() -> dict:
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
+        "crypto_auto_sync": preferences.get_market_auto_sync("crypto"),
+        "us_auto_sync": preferences.get_market_auto_sync("us"),
+        "data_page_market": preferences.get_data_page_market(),
         "review_push_channels": preferences.get_review_push_channels(),
         "review_push_mode": preferences.get_review_push_mode(),
         "market_recap_system_prompt": preferences.get_market_recap_system_prompt(),
@@ -2211,6 +2214,50 @@ class ReviewScheduleIn(BaseModel):
     enabled: bool
     hour: int
     minute: int
+
+
+class MarketAutoSyncIn(BaseModel):
+    market: Literal["crypto", "us"]
+    enabled: bool
+    interval_minutes: int
+
+
+@router.put("/preferences/market-auto-sync")
+def update_market_auto_sync(req: MarketAutoSyncIn, request: Request) -> dict:
+    """保存市场自动同步偏好 (crypto/us 分钟级档位) 并立即更新 APScheduler job。
+
+    - enabled=True: 注册/更新 interval job (crypto 7×24; us 仅交易日盘中门控)
+    - enabled=False: 移除 job
+    - 非法档位/市场 → 422 (preferences 层 fail-closed)
+    """
+    from app.jobs.daily_pipeline import _register_market_auto_sync_job
+    from app.services import preferences
+
+    try:
+        sched = preferences.set_market_auto_sync(req.market, req.enabled, req.interval_minutes)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        _register_market_auto_sync_job(scheduler, request.app.state.repo, req.market)
+        logger.info("market auto sync %s: %s", req.market, sched)
+    return sched
+
+
+class DataPageMarketIn(BaseModel):
+    market: Literal["stock", "crypto", "us"]
+
+
+@router.put("/preferences/data-page-market")
+def update_data_page_market(req: DataPageMarketIn) -> dict:
+    """保存数据页当前市场 (纯偏好, 无调度副作用)。"""
+    from app.services import preferences
+
+    try:
+        return {"market": preferences.set_data_page_market(req.market)}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 @router.put("/preferences/review-schedule")

@@ -152,6 +152,8 @@ _table_cache: dict[str, dict | None] = {
     "etf_instruments": None,
     "crypto_enriched": None,
     "crypto_instruments": None,
+    "us_enriched": None,
+    "us_instruments": None,
     "minute": None,
     "adj_factor": None,
     "instruments": None,
@@ -326,6 +328,27 @@ def _count_instruments_symbols(repo) -> int:
     except Exception:  # noqa: BLE001
         pass
     return 0
+
+
+def _safe_aggregate_instruments_view(repo, view: str) -> dict | None:
+    """instruments_* 视图统计 (无 date 列, 泛化版, 供 crypto/us 维表复用)。"""
+    try:
+        row = repo.execute_one(
+            f"""SELECT count(*) AS rows,
+                       count(DISTINCT symbol) AS symbols_covered,
+                       count_if(name IS NOT NULL AND name != '') AS named
+                FROM {view}"""
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("aggregate %s failed: %s", view, e)
+        return None
+    if not row or not row[0]:
+        return None
+    return {
+        "rows": int(row[0]),
+        "symbols_covered": int(row[1] or 0),
+        "named": int(row[2] or 0),
+    }
 
 
 def _safe_aggregate_instruments(repo) -> dict | None:
@@ -740,7 +763,9 @@ def status(request: Request) -> dict:
     "etf_enriched":      _get_table_stats("etf_enriched",      lambda: _safe_aggregate_etf_enriched(repo), busy=busy),
     "etf_instruments":   _get_table_stats("etf_instruments",   lambda: _safe_aggregate_etf_instruments(repo), busy=busy),
     "crypto_enriched":   _get_table_stats("crypto_enriched",   lambda: _safe_aggregate(repo, "kline_crypto_enriched"), busy=busy),
-    "crypto_instruments": _get_table_stats("crypto_instruments", lambda: _safe_aggregate(repo, "instruments_crypto"), busy=busy),
+    "crypto_instruments": _get_table_stats("crypto_instruments", lambda: _safe_aggregate_instruments_view(repo, "instruments_crypto"), busy=busy),
+    "us_enriched":       _get_table_stats("us_enriched",       lambda: _safe_aggregate(repo, "kline_us_enriched"), busy=busy),
+    "us_instruments":    _get_table_stats("us_instruments",    lambda: _safe_aggregate_instruments_view(repo, "instruments_us"), busy=busy),
     "minute":      _get_table_stats("minute",      lambda: _safe_aggregate_minute(repo), busy=busy),
         "adj_factor":  _get_table_stats("adj_factor",  lambda: _safe_aggregate_adj_factor(repo), busy=busy),
         "instruments": _get_table_stats("instruments", lambda: _safe_aggregate_instruments(repo), busy=busy),
@@ -752,6 +777,8 @@ def status(request: Request) -> dict:
         # 调度
         "next_instruments_run": _next_cron_run(scheduler, "pre_market_instruments"),
         "next_pipeline_run":    _next_cron_run(scheduler, "daily_pipeline"),
+        "next_crypto_auto_run": _next_cron_run(scheduler, "crypto_auto_sync"),
+        "next_us_auto_run":     _next_cron_run(scheduler, "us_auto_sync"),
         "last_instruments_run": _last_finished("instruments"),
         "last_pipeline_run":    _last_finished("pipeline"),
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),

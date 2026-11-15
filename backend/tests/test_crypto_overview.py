@@ -113,7 +113,8 @@ def test_overview_crypto_no_price_limit_semantics(repo):
     assert data["limit"]["limit_up"] == 0 and data["limit"]["tiers"] == []
     assert data["activity"]["avg_turnover"] == 0
     assert data["boards"] == []
-    assert data["concept_rank"] == {"leading": [], "lagging": []}
+    # 概念维度 (DeFi/MEME/L1 本地映射聚合): 结构契约; 空数据时为空列表
+    assert set(data["concept_rank"]) == {"leading", "lagging"}
     assert data["active_leaders"] == []
     assert data["radar"] is None and data["emotion"] is None
 

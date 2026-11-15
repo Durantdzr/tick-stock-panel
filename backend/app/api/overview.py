@@ -384,6 +384,10 @@ def market_overview(request: Request, as_of: date | None = None, asset_type: str
         from app.services.crypto_overview import build_crypto_overview
 
         data = build_crypto_overview(request.app.state.repo, as_of)
+    elif asset_type == "us":
+        from app.services.us_overview import build_us_overview
+
+        data = build_us_overview(request.app.state.repo, as_of)
     else:
         data = _build_overview(request, as_of)
     with _cache_lock:

@@ -103,7 +103,9 @@ _STORE_DIR = _default_store_dir()
 
 
 class JobStore:
-    def __init__(self, max_jobs: int = 50, store_dir: Path = _STORE_DIR) -> None:
+    def __init__(self, max_jobs: int = 500, store_dir: Path = _STORE_DIR) -> None:
+        # 500: crypto/us 分钟级自动同步每轮各记一条 (5 分钟档 ≈ 288 条/天/市场),
+        # 50 会被单市场几小时滚满, 挤掉 A股 管道历史; 仍按文件最旧驱逐。
         self._max_jobs = max_jobs
         self._store_dir = store_dir
         self._active_jobs: dict[str, dict[str, Any]] = {}   # running/pending
@@ -214,6 +216,8 @@ class JobStore:
         timeout_s: int | None = None,
         *,
         long_running: bool = False,
+        label: str | None = None,
+        trigger: str | None = None,
     ) -> tuple[str, bool]:
         """单飞创建任务。返回 (job_id, is_new)。
 
@@ -227,6 +231,9 @@ class JobStore:
         timeout_s: reap_stale 判定「进度停滞卡死」的阈值。None 时读取用户配置。
         long_running: timeout_s 为 None 时,是否读取长任务配置;普通任务默认
             1200s,分钟K全市场同步等长任务默认 1800s。
+        label: 市场任务族标识 (crypto_sync/us_sync), 供 /api/pipeline/jobs 过滤;
+            A股 既有任务不传 (None), 保持原语义。
+        trigger: 触发来源 (manual/daily/auto)。
         """
         if timeout_s is None:
             from app.services import preferences
@@ -259,6 +266,8 @@ class JobStore:
                 "result": None,
                 "error": None,
                 "timeout_s": timeout_s,
+                "label": label,
+                "trigger": trigger,
             }
             self._active_jobs[job_id] = job
             self._active_id = job_id
@@ -497,6 +506,9 @@ def _summary(j: dict[str, Any]) -> dict[str, Any]:
         "duration_s": j["duration_s"],
         "result": j["result"],
         "error": j["error"],
+        # label/trigger 为市场任务标注; 旧记录缺键 → None (兼容存量 JSON)
+        "label": j.get("label"),
+        "trigger": j.get("trigger"),
     }
 
 

@@ -19,6 +19,7 @@ from app.api import (
     backtest,
     config_backup,
     crypto,
+    us,
     data,
     definitions,
     events,
@@ -690,6 +691,7 @@ app.include_router(events.router)
 app.include_router(rps.router)
 app.include_router(sector_rotation.router)
 app.include_router(crypto.router)
+app.include_router(us.router)
 app.include_router(markets.router)
 app.include_router(external_info.router)
 

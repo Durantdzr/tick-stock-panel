@@ -50,8 +50,9 @@ def test_crypto_rules_and_feature_boundaries():
     assert rules["volume_unit"] == "base_coin"
     for feature in ("dashboard", "daily_screener", "backtest", "news", "market_sentiment"):
         assert is_feature_enabled("crypto", feature) is True
+    assert is_feature_enabled("crypto", "sector_heat") is True  # 概念 = 本地映射聚合 (DeFi/MEME/L1)
     for feature in ("realtime_monitor", "minute_screener",
-                    "limit_ladder", "sector_heat", "financial"):
+                    "limit_ladder", "financial"):
         assert is_feature_enabled("crypto", feature) is False
 
 

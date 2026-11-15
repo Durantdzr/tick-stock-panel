@@ -60,7 +60,7 @@ interface ScreenerTableProps {
   /** 表头切换分时纵轴模式 */
   onToggleIntradayYMode?: () => void
   /** 当前列表资产类型 (ETF/crypto 无统一涨跌停规则, limit 模式退化为自适应) */
-  assetType?: 'stock' | 'etf' | 'crypto'
+  assetType?: 'stock' | 'etf' | 'crypto' | 'us'
   /** 策略列标签全表展开状态 (false=默认收起: 每行仅显示首个策略+计数) */
   strategyTagsExpanded?: boolean
   /** 表头策略列图标: 切换全表展开/收起 */

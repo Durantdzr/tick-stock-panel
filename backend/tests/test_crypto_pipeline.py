@@ -209,7 +209,9 @@ class _FakeCryptoProvider:
 
     def get_daily(self, symbols, start_time, end_time, asset_type="crypto", on_chunk_done=None):
         self.daily_calls.append((tuple(symbols), start_time))
-        days = [date(2026, 9, 1) + timedelta(days=i) for i in range(self.daily_dates)]
+        # 相对真实"今天"构造: 最新 bar = 昨天 (增量起点 = 今天, 不触发 start>now 跳过)
+        end = date.today() - timedelta(days=1)
+        days = [end - timedelta(days=self.daily_dates - 1 - i) for i in range(self.daily_dates)]
         if start_time is not None:  # 增量语义: 只返回 start_time 之后的bar
             days = [d for d in days if d >= start_time.date()]
         frames = []
@@ -250,7 +252,7 @@ def test_crypto_sync_full_and_incremental(tmp_path, repo, fake_provider):
     second = crypto_sync.run_crypto_sync(repo)
     assert second["ok"] is True and second["daily"]["rows"] == 0
     starts = [s for _, s in fake_provider.daily_calls[-2:]]
-    assert all(s is not None and s.date() == date(2026, 11, 10) for s in starts)
+    assert all(s is not None and s.date() == date.today() for s in starts)
 
 
 def test_crypto_sync_whitelist_filters_instruments(tmp_path, repo, fake_provider):
@@ -258,6 +260,19 @@ def test_crypto_sync_whitelist_filters_instruments(tmp_path, repo, fake_provider
     result = crypto_sync.run_crypto_sync(repo)
     assert result["instruments"] == 1
     assert repo.get_crypto_instruments()["symbol"].to_list() == ["ETHUSDT"]
+
+
+def test_run_crypto_sync_reports_progress(tmp_path, repo, fake_provider):
+    """P1 回归: run_crypto_sync 接受 on_progress 并按阶段回调
+    (_run_tracked 以 fn(on_progress=progress) 调用任务函数)。"""
+    crypto_universe.save_universe(tmp_path, {"spot": ["BTCUSDT"], "futures": ["BTCUSDT"]})
+    events: list[tuple[str, int]] = []
+    result = crypto_sync.run_crypto_sync(
+        repo, with_minute=False,
+        on_progress=lambda stage, pct, msg: events.append((stage, pct)),
+    )
+    assert result["ok"] is True
+    assert [s for s, _ in events] == ["instruments", "daily", "enriched"]
 
 
 # ================================================================

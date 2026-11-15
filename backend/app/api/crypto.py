@@ -1,19 +1,20 @@
-"""加密货币 (crypto) API — 白名单配置、数据同步与状态。
+"""加密货币 (crypto) API — 白名单/概念配置、数据同步与状态。
 
 crypto 是独立市场: 数据走 crypto 专用数据源 (默认 binance 插件),
 本路由只做配置/触发/查询, 数据消费统一走现有 kline/screener API
-(带 asset_type=crypto)。
+(带 asset_type=crypto)。手动同步经任务库跟踪 (label=crypto_sync),
+进度可查 GET /api/pipeline/jobs?label=crypto_sync。
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.services import crypto_sync, crypto_universe
+from app.jobs.daily_pipeline import start_market_sync
+from app.services import crypto_concepts, crypto_sync, crypto_universe
 
 logger = logging.getLogger(__name__)
 
@@ -47,26 +48,39 @@ def put_universe(request: Request, body: UniverseIn):
     return cleaned
 
 
+class ConceptsIn(BaseModel):
+    concepts: dict[str, list[str]] = Field(default_factory=dict, description='概念 → 成员 (如 "DeFi": ["ETHUSDT"])')
+
+
+@router.get("/concepts")
+def get_concepts(request: Request):
+    """读取 crypto 概念板块映射 (DeFi/MEME/L1 等, 缺省自动生成)。"""
+    return crypto_concepts.load_concepts(request.app.state.repo.store.data_dir)
+
+
+@router.put("/concepts")
+def put_concepts(request: Request, body: ConceptsIn):
+    """更新概念映射。立即生效, 看板概念排名按新映射聚合。"""
+    if not body.concepts:
+        raise HTTPException(status_code=422, detail="概念映射不能为空")
+    cleaned = crypto_concepts.save_concepts(request.app.state.repo.store.data_dir, body.concepts)
+    return cleaned
+
+
 @router.post("/sync")
 def post_sync(request: Request, body: SyncIn | None = None):
     """后台触发一次 crypto 全量同步 (instruments → 日K → enriched → 可选分钟K)。
 
-    立即返回; 进度经 GET /api/crypto/status 查询。重复触发被同步锁拒绝。
+    立即返回 job_id; 进度经 GET /api/crypto/status 或
+    GET /api/pipeline/jobs?label=crypto_sync 查询。任务库为全局单飞:
+    已有任意数据任务在运行 (含其他市场/A股) 时返回 409。
     """
-    if crypto_sync.is_running():
-        raise HTTPException(status_code=409, detail="crypto 同步已在进行中")
-    repo = request.app.state.repo
     with_minute = bool(body.with_minute) if body else False
-
-    def _run():
-        try:
-            result = crypto_sync.run_crypto_sync(repo, with_minute=with_minute)
-            logger.info("crypto 同步完成: %s", result.get("ok"))
-        except Exception:
-            logger.exception("crypto 同步线程异常")
-
-    threading.Thread(target=_run, name="crypto-sync", daemon=True).start()
-    return {"started": True, "with_minute": with_minute}
+    job_id = start_market_sync(request.app.state.repo, "crypto", with_minute=with_minute)
+    if job_id is None:
+        raise HTTPException(status_code=409,
+                            detail="已有数据任务在运行（可能是其他市场同步或 A股 任务）")
+    return {"started": True, "job_id": job_id, "with_minute": with_minute}
 
 
 @router.get("/status")

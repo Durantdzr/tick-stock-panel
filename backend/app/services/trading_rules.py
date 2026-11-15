@@ -34,7 +34,7 @@ FEATURE_KEYS: tuple[str, ...] = (
     "market_sentiment",   # 外部市场情绪指标(恐惧贪婪等)
 )
 
-_ASSET_LABELS = {"stock": "A股", "etf": "ETF", "crypto": "加密货币"}
+_ASSET_LABELS = {"stock": "A股", "etf": "ETF", "crypto": "加密货币", "us": "美股"}
 
 _TRADING_RULES: dict[str, dict[str, Any]] = {
     "stock": {
@@ -100,10 +100,33 @@ _TRADING_RULES: dict[str, dict[str, Any]] = {
             "realtime_monitor": False,  # 相位机/交易时段为 A 股语义, 7×24 市场无相位
             "backtest": True,           # 撮合已参数化: T+0 当日可卖/可再买, 无涨跌停拒单, 任意精度
             "limit_ladder": False,      # 无涨跌停, 梯队/封单无意义
-            "sector_heat": False,       # 无板块/行业口径
+            "sector_heat": True,        # 概念热度 = 本地概念映射聚合 (DeFi/MEME/L1 等, 白名单范围)
             "financial": False,         # 无财报
             "news": True,
             "market_sentiment": True,   # 恐惧贪婪指数/资金费率
+        },
+    },
+    "us": {
+        "label": "美股",
+        "t_plus_1": False,              # 日内回转合法 (PDT 规则属券商层, 引擎不建模)
+        "price_limit": False,           # 无个股涨跌停 (熔断为市场级, 一期不建模)
+        "lot_size": 1,                  # 1 股整股 (碎股/零股属券商层)
+        "stamp_tax": False,
+        "sessions": "us_regular",       # 美东 09:30-16:00 (DST 由 XNYS 日历处理)
+        "day_boundary": "us_eastern_calendar_day",  # 日线 date=美东交易日
+        "volume_unit": "share",         # volume=股 (非 A 股"手"), amount=美元
+        "change_pct_window": "trading_day",
+        "features": {
+            "dashboard": True,
+            "daily_screener": True,
+            "minute_screener": False,   # 分钟策略引擎为 A 股语义
+            "realtime_monitor": False,  # 相位机 A 股专用; 美股相位一期不建模
+            "backtest": True,           # 撮合参数化复用: T+0 回转/无涨跌停/整股
+            "limit_ladder": False,      # 无涨跌停
+            "sector_heat": False,       # 行业口径一期不建模
+            "financial": False,         # 东财美股无财务表
+            "news": True,
+            "market_sentiment": True,
         },
     },
 }
@@ -138,8 +161,12 @@ def deny_reason(asset_type: str, feature: str) -> str | None:
     reasons = {
         ("crypto", "realtime_monitor"): "实时监控依赖 A 股交易时段相位机, 加密货币 7×24 无相位口径",
         ("crypto", "minute_screener"): "分钟策略当前仅支持 A 股",
+        ("us", "realtime_monitor"): "实时监控依赖 A 股交易时段相位机, 美股相位一期不建模",
+        ("us", "minute_screener"): "分钟策略当前仅支持 A 股",
+        ("us", "limit_ladder"): "美股无个股涨跌停, 涨停梯队/封单不适用",
+        ("us", "sector_heat"): "美股行业热度口径一期不建模",
+        ("us", "financial"): "美股数据源暂无财务报表",
         ("crypto", "limit_ladder"): "加密货币无涨跌停, 涨停梯队/封单不适用",
-        ("crypto", "sector_heat"): "加密货币无板块/行业口径",
         ("crypto", "financial"): "加密货币无财务数据",
     }
     return reasons.get((asset_type, feature), f"{feature} 功能未对 {label} 开放")

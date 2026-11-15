@@ -73,8 +73,36 @@ def _latest_daily_dates(repo, symbols: list[str]) -> dict[str, object]:
     return dict(zip(df["symbol"].to_list(), df["latest"].to_list(), strict=True))
 
 
+_INSTRUMENTS_TTL_S = 12 * 3600.0  # 维表变化极少 (新上市/下架), 12h 内不重扫
+
+
+def _instruments_fresh(repo) -> bool:
+    """instruments_crypto 落盘在 TTL 内且覆盖全部白名单成员 → 跳过重扫。
+
+    覆盖校验防半份维表 (上游 exchangeInfo 半失败时曾写入单市场子集) 长期驻留。
+    """
+    path = repo.store.data_dir / "instruments_crypto" / "instruments_crypto.parquet"
+    try:
+        import time as _time
+
+        if (_time.time() - path.stat().st_mtime) >= _INSTRUMENTS_TTL_S:
+            return False
+    except OSError:
+        return False
+    try:
+        have = set(pl.read_parquet(path)["symbol"].cast(pl.Utf8).to_list())
+    except Exception:  # noqa: BLE001
+        return False
+    wanted = set(crypto_universe.internal_symbols(
+        crypto_universe.load_universe(repo.store.data_dir)))
+    return wanted <= have
+
+
 def sync_crypto_instruments(repo) -> int:
     """同步 crypto instruments 维表 (白名单 ∩ 交易所 TRADING 状态)。"""
+    if _instruments_fresh(repo):
+        logger.info("crypto instruments 维表 12h 内已刷新, 跳过重扫")
+        return repo.get_crypto_instruments().height
     provider = _crypto_provider()
     universe = crypto_universe.load_universe(repo.store.data_dir)
     wanted = set(crypto_universe.internal_symbols(universe))
@@ -108,7 +136,12 @@ def sync_crypto_daily(repo, *, incremental: bool = True, on_progress=None) -> di
         start_time = None
         if latest is not None:
             try:
-                start_time = datetime.combine(latest, datetime.min.time()) + timedelta(days=1)
+                candidate = datetime.combine(latest, datetime.min.time()) + timedelta(days=1)
+                if candidate > datetime.now():
+                    # 本地已持有最新 UTC 日 bar (币安日线 date=UTC 日): 无缺口可拉。
+                    # 不钳制会把 start 传到明天 — 现货返空数组, 合约 fapi 返 -1023 错误。
+                    continue
+                start_time = candidate
             except (TypeError, ValueError):
                 start_time = None
         try:
@@ -200,10 +233,12 @@ def sync_crypto_minute(repo, days: int = 3, on_progress=None) -> dict:
     return {"ok": True, "rows": written, "symbols": len(symbols), "errors": errors}
 
 
-def run_crypto_sync(repo, *, with_minute: bool = False) -> dict:
+def run_crypto_sync(repo, *, with_minute: bool = False, on_progress=None) -> dict:
     """完整 crypto 同步入口 (instruments → daily → enriched → 可选 minute)。
 
     加锁串行 (重复触发直接返回进行中状态); 结果缓存在 _last_status。
+    on_progress: (stage, pct, msg) 阶段回调, 供任务库跟踪 (enriched 在
+    sync_crypto_daily 内部完成, 回调在 daily 之后)。None 时零开销。
     """
     global _last_status
     if not _sync_lock.acquire(blocking=False):
@@ -211,10 +246,20 @@ def run_crypto_sync(repo, *, with_minute: bool = False) -> dict:
     started = time.monotonic()
     _last_status = {"ok": None, "running": True,
                     "started_at": datetime.now().isoformat(timespec="seconds")}
+
+    def _report(stage: str, pct: int, msg: str) -> None:
+        if on_progress:
+            on_progress(stage, pct, msg)
+
     try:
         instruments = sync_crypto_instruments(repo)
+        _report("instruments", 10, f"维表 {instruments} 只")
         daily = sync_crypto_daily(repo)
+        _report("daily", 50, f"日K {daily.get('rows', 0)} 行")
+        _report("enriched", 80, f"指标 {daily.get('enriched_rows', 0)} 行")
         minute = sync_crypto_minute(repo) if with_minute else None
+        if minute is not None:
+            _report("minute", 90, f"分钟K {minute.get('rows', 0)} 行")
         _last_status = {
             "ok": True,
             "instruments": instruments,
@@ -226,6 +271,10 @@ def run_crypto_sync(repo, *, with_minute: bool = False) -> dict:
         return _last_status
     except ProviderRequestError as e:
         _last_status = {"ok": False, "error": str(e), "finished_at": datetime.now().isoformat(timespec="seconds")}
+        return _last_status
+    except Exception as e:
+        logger.exception("同步线程异常")
+        _last_status = {"ok": False, "error": f"{type(e).__name__}: {e}", "finished_at": datetime.now().isoformat(timespec="seconds")}
         return _last_status
     finally:
         _sync_lock.release()

@@ -339,6 +339,8 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
   - 提供 `daily`(沪深 A 股单标的 fqkline 接口, 原始价; 注意 day 行顺序是 开,收,高,低,量(手), amount 接口不提供置 None)、`minute`(mkline m1 接口, 最近 320 根 ≈1.3 个交易日, `minute_history_days=1` 声明浅源, 北京墙钟 naive)、`depth5`(qt.gtimg.cn 批量快照解析五档, 60 只/批, 量=手); 批量快照无法服务 quote_service 全市场轮询, 故不声明 realtime; 不含北交所
 - **`backend/app/plugins/sina/`** — 新浪财经公开行情(runtime: none, 免 Key, realtime 需 Referer 头)
   - 提供 `realtime`(沪深京 A 股全市场快照, hs_a 节点分页; volume 股→手, changepercent/turnoverratio 百分数→小数制)、`daily`(getKLineData 单标的, 原始价, 深度 ~1023 根约 4 年, 超窗 fail-closed); 限频敏感, 轮询间隔建议 ≥60s
+- **`backend/app/plugins/eastmoney_us/`** — 东方财富美股公开行情(runtime: none, 免 Key)
+  - 加密市场专用源先例的姊妹实现: 子类化 A 股 eastmoney provider 复用 HTTP/kline 解析层, 清单声明 `asset_types: [us]`(不进 A 股能力路由候选); 提供 `realtime`(全市场约 1.4 万只 clist 分页 + 指定标的 ulist.np 批量)/`daily`/`minute`(klt=101/1, date=美东交易日, 分钟 datetime=北京墙钟); volume=股(不换算)、amount=美元; secid 市场前缀(105/106/107)探测式 memo
 - **`backend/app/plugins/binance/`** — 币安公开行情(runtime: none, 免 Key, 可选 `BINANCE_API_KEY` 提额)
   - 加密货币专用市场源, 清单声明 `asset_types: [crypto]`(不进 A 股 7 能力路由候选), 由 crypto 同步服务(`services/crypto_sync.py`)直接取数; 提供 `daily`/`minute`(现货 + U 本位合约, 合约内部 `.P` 后缀命名空间, 时间统一北京墙钟)、`realtime`(24hr 快照); **volume=基础币数量、amount=USDT**(非股票手/元口径); 详见 [crypto-market.md](./crypto-market.md)
   - `tests/test_crypto_pipeline.py` — 管道/契约测试(含 provider 时区与单位断言)

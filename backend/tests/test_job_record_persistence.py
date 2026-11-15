@@ -123,3 +123,63 @@ def test_terminal_write_replaces_running_snapshot(tmp_path):
     disk = _read_disk(d, jid)
     assert disk["status"] == "failed"
     assert disk["error"] == "boom"
+
+
+# ── label / trigger 市场任务标注 ─────────────────────────────────────────
+
+def test_create_with_label_and_trigger_roundtrip(tmp_path):
+    """市场同步任务的 label/trigger 落盘并在 summary 中可见。"""
+    d = tmp_path / "jobs"
+    store = JobStore(store_dir=d)
+    jid, is_new = store.create(timeout_s=60, label="crypto_sync", trigger="manual")
+    assert is_new is True
+    store.succeed(jid, {"ok": True})
+
+    disk = _read_disk(d, jid)
+    assert disk["label"] == "crypto_sync"
+    assert disk["trigger"] == "manual"
+    recent = store.list_recent(limit=5)
+    assert recent[0]["label"] == "crypto_sync"
+    assert recent[0]["trigger"] == "manual"
+
+
+def test_legacy_record_without_label_readable(tmp_path):
+    """不带 label/trigger 的既有路径 (A股 管道) summary 为 None, 不报错。"""
+    d = tmp_path / "jobs"
+    store = JobStore(store_dir=d)
+    jid, _ = store.create(timeout_s=60)
+    store.succeed(jid, {})
+
+    recent = store.list_recent(limit=5)
+    assert recent[0]["label"] is None
+    assert recent[0]["trigger"] is None
+
+
+def test_list_jobs_label_filter(monkeypatch, tmp_path):
+    """/api/pipeline/jobs?label= 逗号分隔白名单过滤; 不传 = 全量语义。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.pipeline import router
+
+    store = JobStore(store_dir=tmp_path / "jobs")
+    monkeypatch.setattr("app.api.pipeline.job_store", store)
+
+    jid_a, _ = store.create(timeout_s=60, label="crypto_sync", trigger="auto")
+    store.fail(jid_a, "x")
+    jid_b, _ = store.create(timeout_s=60, label="us_sync", trigger="manual")
+    store.succeed(jid_b, {})
+    jid_c, _ = store.create(timeout_s=60)  # A股 无 label
+    store.succeed(jid_c, {})
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    body = client.get("/api/pipeline/jobs", params={"label": "crypto_sync,us_sync"}).json()
+    labels = [j["label"] for j in body["jobs"]]
+    assert set(labels) == {"crypto_sync", "us_sync"}
+    assert len(labels) == 2  # 无 label 的 A股 记录被过滤掉
+
+    all_jobs = client.get("/api/pipeline/jobs").json()["jobs"]
+    assert len(all_jobs) == 3

@@ -155,8 +155,14 @@ def cancel_job(job_id: str) -> dict:
 
 
 @router.get("/jobs")
-def list_jobs(limit: int = 20) -> dict:
+def list_jobs(limit: int = 20, label: str | None = None) -> dict:
+    """任务历史。label: 逗号分隔白名单 (如 crypto_sync,us_sync), 按市场任务族过滤;
+    不传 = 全量 (A股 既有语义)。"""
+    jobs = job_store.list_recent(limit=limit)
+    if label:
+        wanted = {s.strip() for s in label.split(",") if s.strip()}
+        jobs = [j for j in jobs if j.get("label") in wanted]
     return {
         "active_id": job_store.active_id(),
-        "jobs": job_store.list_recent(limit=limit),
+        "jobs": jobs,
     }

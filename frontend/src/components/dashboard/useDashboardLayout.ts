@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, type DashboardMarket } from '@/lib/api'
 import { usePreferences } from '@/lib/useSharedQueries'
-import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_CRYPTO, isKnownWidgetType, minSizeOf } from './registry'
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_CRYPTO, DEFAULT_LAYOUT_US, isKnownWidgetType, minSizeOf } from './registry'
 import { normalizeLayout, toBlob, type DashboardItem } from './layout'
 
 const SAVE_DEBOUNCE_MS = 800
@@ -20,8 +20,8 @@ export function useDashboardLayout(market: DashboardMarket = 'stock'): {
   setItems: (next: DashboardItem[]) => void
 } {
   const { data: prefs } = usePreferences()
-  const defaults = market === 'crypto' ? DEFAULT_LAYOUT_CRYPTO : DEFAULT_LAYOUT
-  const savedBlob = market === 'crypto' ? prefs?.dashboard_layout_crypto : prefs?.dashboard_layout
+  const defaults = market === 'crypto' ? DEFAULT_LAYOUT_CRYPTO : market === 'us' ? DEFAULT_LAYOUT_US : DEFAULT_LAYOUT
+  const savedBlob = market === 'crypto' ? prefs?.dashboard_layout_crypto : market === 'us' ? prefs?.dashboard_layout_us : prefs?.dashboard_layout
   const saved = useMemo(
     // normalizeLayout: blob → clamp/去重/消毒; 未知组件剔除 (后端是 blob 权威副本)
     () => normalizeLayout(savedBlob ?? undefined, defaults, isKnownWidgetType, minSizeOf),

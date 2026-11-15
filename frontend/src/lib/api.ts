@@ -494,7 +494,7 @@ export interface OverviewDimensionRankItem {
 }
 
 /** 看板市场 (资产类型) — 后端交易规则注册表声明的市场的前端子集 */
-export type DashboardMarket = 'stock' | 'crypto'
+export type DashboardMarket = 'stock' | 'crypto' | 'us'
 
 export interface OverviewMarket {
   as_of: string | null
@@ -2447,6 +2447,11 @@ export interface ConfigBackupApplyResult {
 export interface Preferences {
   realtime_quotes_enabled: boolean
   watchlist_groups_in_nav: boolean
+  /** 市场自动同步 (crypto/us 分钟级档位, 5/15/30/60 分钟) */
+  crypto_auto_sync?: MarketAutoSync
+  us_auto_sync?: MarketAutoSync
+  /** 数据页当前市场 (默认 stock) */
+  data_page_market?: DashboardMarket
   minute_sync_enabled: boolean
   minute_sync_days: number
   minute_sync_segment_days: number
@@ -2513,6 +2518,7 @@ export interface Preferences {
   dashboard_layout: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
   /** crypto 市场看板布局 (与 stock 相互独立) */
   dashboard_layout_crypto?: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
+  dashboard_layout_us?: { v: number; items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }> } | null
   /** 主界面当前市场 (默认 stock) */
   dashboard_market?: DashboardMarket
   screener_auto_run: boolean
@@ -3587,7 +3593,7 @@ export const api = {
       as_of: string | null
       elapsed_ms: number
       /** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
-      dates?: { stock: string | null; etf: string | null; index: string | null; crypto?: string | null }
+      dates?: { stock: string | null; etf: string | null; index: string | null; crypto?: string | null; us?: string | null }
     }>(
       extColumns
         ? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
@@ -3595,7 +3601,7 @@ export const api = {
     ),
 
   // timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
-  screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index' | 'crypto', timeframe: '1d' | '1m' | 'all' = '1d') => {
+  screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index' | 'crypto' | 'us', timeframe: '1d' | '1m' | 'all' = '1d') => {
     const data = await request<{
       strategies: StrategyDetail[]
       load_errors?: StrategyLoadError[]
@@ -3605,19 +3611,19 @@ export const api = {
     )
     return { presets: data.strategies, load_errors: data.load_errors, legacy_migration: data.legacy_migration }
   },
-  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' | 'us' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerResult>('/api/screener/run_preset', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ strategy_id, pool, as_of: asOf ?? null, ext_columns: extColumns || null, asset_type: assetType, timeframe }),
     }),
-  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' = 'stock') =>
+  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' | 'crypto' | 'us' = 'stock') =>
     request<ScreenerResult>('/api/screener/run', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ conditions, order_by: orderBy, limit, pool, ext_columns: extColumns || null, asset_type: assetType }),
     }),
-  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' | 'crypto' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' | 'crypto' | 'us' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerRunAllSummary>(
       '/api/screener/run_all', { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, body: JSON.stringify({ as_of: asOf ?? null, strategy_ids: strategyIds ?? null, asset_type: assetType, timeframe, summary_only: true }) },
     ),
@@ -3740,10 +3746,62 @@ export const api = {
     request<{ columns: FactorColumn[] }>('/api/backtest/factor/columns'),
 
   cryptoSync: (withMinute: boolean) =>
-    request<{ started: boolean; with_minute: boolean }>('/api/crypto/sync', {
+    request<{ started: boolean; job_id: string; with_minute: boolean }>('/api/crypto/sync', {
       method: 'POST',
       body: JSON.stringify({ with_minute: withMinute }),
     }),
+  usSync: (withMinute: boolean) =>
+    request<{ started: boolean; job_id: string; with_minute: boolean }>('/api/us/sync', {
+      method: 'POST',
+      body: JSON.stringify({ with_minute: withMinute }),
+    }),
+  /** crypto 标的白名单 (现货 + 合约, 合约内部自动加 .P 后缀) */
+  cryptoUniverse: () =>
+    request<{ spot: string[]; futures: string[] }>('/api/crypto/universe'),
+  updateCryptoUniverse: (spot: string[], futures: string[]) =>
+    request<{ spot: string[]; futures: string[] }>('/api/crypto/universe', {
+      method: 'PUT',
+      body: JSON.stringify({ spot, futures }),
+    }),
+  /** 美股 K 线同步白名单 (维表全市场, 白名单仅约束 K 线同步范围) */
+  usUniverse: () => request<{ us: string[] }>('/api/us/universe'),
+  updateUsUniverse: (us: string[]) =>
+    request<{ us: string[] }>('/api/us/universe', {
+      method: 'PUT',
+      body: JSON.stringify({ us }),
+    }),
+  /** crypto 概念板块映射 (DeFi/MEME/L1 等, 看板概念热度按此聚合) */
+  cryptoConcepts: () => request<Record<string, string[]>>('/api/crypto/concepts'),
+  updateCryptoConcepts: (concepts: Record<string, string[]>) =>
+    request<Record<string, string[]>>('/api/crypto/concepts', {
+      method: 'PUT',
+      body: JSON.stringify({ concepts }),
+    }),
+  /** 市场自动同步 (crypto/us 分钟级档位); 保存后后端立即重注册 scheduler job */
+  updateMarketAutoSync: (market: 'crypto' | 'us', enabled: boolean, intervalMinutes: number) =>
+    request<MarketAutoSync>('/api/settings/preferences/market-auto-sync', {
+      method: 'PUT',
+      body: JSON.stringify({ market, enabled, interval_minutes: intervalMinutes }),
+    }),
+  /** 数据页当前市场 (纯偏好) */
+  updateDataPageMarket: (market: DashboardMarket) =>
+    request<{ market: DashboardMarket }>('/api/settings/preferences/data-page-market', {
+      method: 'PUT',
+      body: JSON.stringify({ market }),
+    }),
+  usStatus: () =>
+    request<{
+      ok?: boolean | null
+      running?: boolean
+      skipped?: string
+      started_at?: string
+      finished_at?: string
+      elapsed_s?: number
+      instruments?: number
+      error?: string
+      daily?: { ok?: boolean; rows?: number; symbols?: number; errors?: string[] }
+      minute?: { ok?: boolean; rows?: number; symbols?: number; errors?: string[] } | null
+    } | null>('/api/us/status'),
   cryptoStatus: () =>
     request<{
       ok?: boolean | null
@@ -3757,7 +3815,7 @@ export const api = {
       minute?: { ok?: boolean; rows?: number; symbols?: number; errors?: string[] } | null
     } | null>('/api/crypto/status'),
 
-  factorLibrary: (assetType?: 'stock' | 'etf' | 'crypto') =>
+  factorLibrary: (assetType?: 'stock' | 'etf' | 'crypto' | 'us') =>
     request<{ factors: FactorLibraryItem[] }>(
       `/api/factors${assetType ? `?asset_type=${assetType}` : ''}`,
     ),
@@ -3768,7 +3826,7 @@ export const api = {
       body: JSON.stringify({ formula }),
     }),
 
-  factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf' | 'crypto'; days?: number }) =>
+  factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf' | 'crypto' | 'us'; days?: number }) =>
     request<FactorTrialResponse>('/api/factors/trial', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -3840,7 +3898,7 @@ export const api = {
     weight?: 'equal' | 'factor_weight'
     fees_pct?: number
     slippage_bps?: number
-    asset_type?: 'stock' | 'etf' | 'crypto' | 'index'
+    asset_type?: 'stock' | 'etf' | 'crypto' | 'us' | 'crypto' | 'index'
   }) =>
     request<FactorBacktestResult>('/api/backtest/factor/run', {
       method: 'POST',
@@ -4032,9 +4090,9 @@ export const api = {
   /** 手动停止一个 running/pending 的同步任务 (协作式: 当前分块完成后线程自行退出) */
   pipelineJobCancel: (id: string) =>
     request<{ cancelled: string }>(`/api/pipeline/jobs/${id}/cancel`, { method: 'POST' }),
-  pipelineJobs: (limit = 20) =>
+  pipelineJobs: (limit = 20, label?: string) =>
     request<{ active_id: string | null; jobs: PipelineJobSummary[] }>(
-      `/api/pipeline/jobs?limit=${limit}`,
+      `/api/pipeline/jobs?limit=${limit}${label ? `&label=${encodeURIComponent(label)}` : ''}`,
     ),
 
   dataStatus: () => request<DataStatus>('/api/data/status'),
@@ -5144,9 +5202,19 @@ export interface PipelineJob {
     skipped_stages?: string[]
   } | null
   error: string | null
+  /** 市场任务族标注 (crypto_sync/us_sync); A股 既有任务为 null */
+  label?: string | null
+  /** 触发来源: 手动 / 每日定时 / 分钟级自动 */
+  trigger?: 'manual' | 'daily' | 'auto' | null
 }
 
 export type PipelineJobSummary = Omit<PipelineJob, 'log'>
+
+/** 市场自动同步偏好 (档位 5/15/30/60 分钟) */
+export interface MarketAutoSync {
+  enabled: boolean
+  interval_minutes: number
+}
 
 // ===== Data status =====
 export type IntegrityAsset = 'stock' | 'etf' | 'index'
@@ -5205,6 +5273,8 @@ export interface DataStatus {
   etf_enriched: TableStats | null
   crypto_enriched?: TableStats | null
   crypto_instruments?: TableStats | null
+  us_enriched?: TableStats | null
+  us_instruments?: TableStats | null
   etf_instruments: InstrumentsStats | null
   minute: TableStats | null
   adj_factor: TableStats | null
@@ -5243,6 +5313,9 @@ export interface DataStatus {
   } | null  // busy 降级 (预热/同步/修复期间) 且冷启动缓存未热时为 null, 不代表无数据
   next_pipeline_run: string | null
   next_instruments_run: string | null
+  /** 市场自动同步 interval job 下次运行时间 (未启用为 null) */
+  next_crypto_auto_run: string | null
+  next_us_auto_run: string | null
   last_pipeline_run: string | null
   last_instruments_run: string | null
   checked_at: string

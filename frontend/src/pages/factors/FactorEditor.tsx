@@ -84,7 +84,7 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [formula, setFormula] = useState(DEFAULT_FORMULA)
-  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto'>('stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto' | 'us'>('stock')
   const [validation, setValidation] = useState<FactorValidateResponse | null>(null)
   const [trial, setTrial] = useState<FactorTrialResponse | null>(null)
   const [saveLabel, setSaveLabel] = useState('')
@@ -365,6 +365,7 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
             <option value="stock">股票</option>
             <option value="etf">ETF</option>
             <option value="crypto">加密货币</option>
+            <option value="us">美股</option>
           </select>
           <button
             type="button"

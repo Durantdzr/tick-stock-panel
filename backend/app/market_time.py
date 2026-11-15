@@ -33,6 +33,32 @@ def is_crypto_asset(asset_type: str | None) -> bool:
     return asset_type == "crypto"
 
 
+def is_us_asset(asset_type: str | None) -> bool:
+    """美股资产 (美东时段, 交易日历 XNYS, 无 A 股日历依赖)。"""
+    return asset_type == "us"
+
+
+US_TZ = "America/New_York"  # DST 由 zoneinfo 处理
+
+
+def us_now() -> datetime:
+    """当前美东时间 (带时区, DST 自动)。"""
+    from zoneinfo import ZoneInfo
+
+    return cn_now().astimezone(ZoneInfo(US_TZ))
+
+
+def us_in_session(now: datetime | None = None) -> bool:
+    """美股常规交易时段 (美东 09:30-16:00, XNYS 交易日; 节假日由调用方另行门控)。"""
+    from zoneinfo import ZoneInfo
+
+    now = now or us_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo(US_TZ))
+    t = now.time()
+    return now.weekday() < 5 and dt_time(9, 30) <= t <= dt_time(16, 0)
+
+
 def in_continuous_session(now: datetime | None = None) -> bool:
     """A股连续竞价时段 (北京时间): 9:30-11:30 / 13:00-15:00, 仅工作日。"""
     now = now or cn_now()

@@ -152,7 +152,7 @@ export const storage = {
   strategyBacktestLast: kv<{
     selectedStrategy: string | null
     symbols: string
-    assetType?: 'stock' | 'etf' | 'crypto'
+    assetType?: 'stock' | 'etf' | 'crypto' | 'us'
     start: string
     end: string
     matching: 'close_t' | 'open_t+1'

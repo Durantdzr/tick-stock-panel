@@ -17,7 +17,7 @@ import { scoreColor, quoteAge } from '@/components/dashboard/shared'
 import { DashboardGrid } from '@/components/dashboard/DashboardGrid'
 import { AddWidgetPanel } from '@/components/dashboard/AddWidgetPanel'
 import { useDashboardLayout } from '@/components/dashboard/useDashboardLayout'
-import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_CRYPTO, widgetDef, widgetsForMarket, widgetVisibleIn, type WidgetCtx } from '@/components/dashboard/registry'
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_CRYPTO, DEFAULT_LAYOUT_US, widgetDef, widgetsForMarket, widgetVisibleIn, type WidgetCtx } from '@/components/dashboard/registry'
 import { cloneItems, GRID_COLS, type WidgetType } from '@/components/dashboard/layout'
 
 /** 兼容旧后端的预热标志; 同步/自动修复也会使统计暂不可用。 */
@@ -68,7 +68,7 @@ export function Dashboard() {
   const [dashEditing, setDashEditing] = useState(false)
   const placedTypes = useMemo(() => new Set(dashItems.map(it => it.t)), [dashItems])
   const resetDashLayout = useCallback(() => {
-    const defaults = market === 'crypto' ? DEFAULT_LAYOUT_CRYPTO : DEFAULT_LAYOUT
+    const defaults = market === 'crypto' ? DEFAULT_LAYOUT_CRYPTO : market === 'us' ? DEFAULT_LAYOUT_US : DEFAULT_LAYOUT
     setDashItems(cloneItems(defaults))
   }, [setDashItems, market])
   /** 追加组件: 放到当前布局最底部; ext-link 用唯一 id 支持多实例 */
@@ -239,6 +239,7 @@ export function Dashboard() {
   // watchlist 模式仅自选 ≤5 只实时, 看板呈现的大盘数据实为盘后快照, 需提示避免误读。
   const quoteMode = data.quote_status?.mode as ('none' | 'watchlist' | 'full_market') | undefined
   const isCrypto = market === 'crypto'
+  const isUs = market === 'us'
 
   // 网格组件渲染上下文: 数据切片 + 交互回调统一由页面层供给
   const widgetCtx: WidgetCtx = {
@@ -260,7 +261,7 @@ export function Dashboard() {
   return (
     <div className="min-h-full bg-base p-1.5">
       {/* 无本地数据常驻引导卡片 —— 一键触发盘后管道获取数据(无 Key 也可); A 股专用管道, crypto 市场不展示 */}
-      {hasNoData && !isCrypto && (
+      {hasNoData && market !== 'stock' && (
         <FetchDataCard
           isFetching={isFetching}
           isStarting={startFetch.isPending}
@@ -274,7 +275,7 @@ export function Dashboard() {
       )}
       {/* 首次使用自动弹窗(同会话仅一次) */}
       <AnimatePresence>
-        {showWelcomeModal && !isCrypto && (
+        {showWelcomeModal && market !== 'stock' && (
           <WelcomeFetchModal
             isTickflowProvider={isTickflowProvider}
             providerLabel={providerLabel}
@@ -297,7 +298,7 @@ export function Dashboard() {
           <h1 className="text-[16px] leading-6 font-semibold text-foreground">市场看板</h1>
           {/* 市场切换: A股 / 加密货币 (后端交易规则注册表声明的看板市场) */}
           <div className="flex overflow-hidden rounded-btn border border-border" role="tablist" aria-label="切换市场">
-            {([['stock', 'A股'], ['crypto', '加密货币']] as [DashboardMarket, string][]).map(([m, label]) => (
+            {([['stock', 'A股'], ['crypto', '加密货币'], ['us', '美股']] as [DashboardMarket, string][]).map(([m, label]) => (
               <button
                 key={m}
                 role="tab"
@@ -317,6 +318,10 @@ export function Dashboard() {
             <span className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
               7×24{data.data_window === '24h_rolling' ? ' · 24h滚动口径' : ''}
             </span>
+          ) : isUs ? (
+            <span className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+              美股 · 白名单口径{data.data_source === 'none' ? ' · 数据未同步' : ''}
+            </span>
           ) : (
             <span
               className="rounded-full border px-2 py-0.5 text-[10px] font-medium"
@@ -329,7 +334,7 @@ export function Dashboard() {
               {data.emotion?.label ?? '—'} · {score}
             </span>
           )}
-          {isCrypto && data.data_source === 'none' && (
+          {(isCrypto || isUs) && data.data_source === 'none' && (
             <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-warning">
               数据源不可达
             </span>

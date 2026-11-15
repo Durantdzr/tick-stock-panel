@@ -95,12 +95,13 @@ function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
   const { data, hasDepth, isSealedDegrade, sealedReady } = ctx
   const strongUp = data.breadth.strong_up ?? 0
   const strongDown = data.breadth.strong_down ?? 0
-  if (data.market === 'crypto') {
-    // crypto 无涨跌停/换手率口径: 只渲染有意义的广度与成交额指标 (24h 滚动口径)
+  if (data.market === 'crypto' || data.market === 'us') {
+    // crypto/us 无涨跌停/换手率口径: 只渲染有意义的广度与成交额指标
+    // (crypto 24h 滚动口径; us 交易日白名单口径)
     return (
       <div className="grid h-full grid-cols-2 gap-1 xl:grid-cols-4">
         <KpiCell label="涨 / 平 / 跌" value={<><span className="text-bull">{data.breadth.up}</span><span className="text-muted">/</span><span className="text-muted">{data.breadth.flat}</span><span className="text-muted">/</span><span className="text-bear">{data.breadth.down}</span></>} sub={`上涨率 ${data.breadth.up_pct.toFixed(1)}%`} />
-        <KpiCell label="强势 / 弱势" value={<><span className="text-bull">{strongUp}</span><span className="text-muted">/</span><span className="text-bear">{strongDown}</span></>} sub="24h 涨跌 ≥3%" />
+        <KpiCell label="强势 / 弱势" value={<><span className="text-bull">{strongUp}</span><span className="text-muted">/</span><span className="text-bear">{strongDown}</span></>} sub={data.market === "us" ? "涨跌 ≥3%" : "24h 涨跌 ≥3%"} />
         <KpiCell label="全市场成交额" value={fmtBigNum(data.amount.total)} sub={`均额 ${fmtBigNum(data.amount.avg)}`} />
         <KpiCell label="平均 / 中位涨跌" value={fmtStockPct(data.breadth.avg_pct ?? 0)} sub={`中位 ${fmtStockPct(data.breadth.median_pct ?? 0)}`} tone="accent" />
       </div>
@@ -126,10 +127,11 @@ function KpiWidget({ ctx }: { ctx: WidgetCtx }) {
 function TrendWidget({ ctx }: { ctx: WidgetCtx }) {
   const { data } = ctx
   const isCrypto = data.market === 'crypto'
+  const noLimitSemantics = isCrypto || data.market === 'us'
   return (
     <div className="flex h-full flex-col">
       <div>
-        <SectionTitle icon={LineChart} title="趋势强度" hint={isCrypto ? '均线/新高低 (白名单)' : '均线/新高低'} />
+        <SectionTitle icon={LineChart} title="趋势强度" hint={isCrypto || data.market === 'us' ? '均线/新高低 (白名单)' : '均线/新高低'} />
         <div className="grid grid-cols-3 gap-1.5">
           <MiniMetric label="站上MA5" value={`${data.trend.above_ma5_pct.toFixed(0)}%`} cls="text-accent" />
           <MiniMetric label="站上MA20" value={`${data.trend.above_ma20_pct.toFixed(0)}%`} cls="text-accent" />
@@ -139,7 +141,7 @@ function TrendWidget({ ctx }: { ctx: WidgetCtx }) {
           <MiniMetric label="高低比" value={`${data.trend.new_high + data.trend.new_low > 0 ? Math.round(data.trend.new_high / (data.trend.new_high + data.trend.new_low) * 100) : 50}%`} cls={data.trend.new_high >= data.trend.new_low ? 'text-bull' : 'text-bear'} />
         </div>
       </div>
-      {!isCrypto && (
+      {!noLimitSemantics && (
         <div className="mt-1.5 border-t border-border pt-1.5">
           <SectionTitle icon={Target} title="实用监控" hint="盘中观察" />
           <div className="grid grid-cols-3 gap-1.5">
@@ -186,7 +188,10 @@ export const WIDGET_DEFS: WidgetDef[] = [
     id: 'indices', label: '指数行情', icon: Gauge, minW: 4, minH: 2, defW: 12, defH: 2,
     render: ctx => (
       <div className="grid h-full grid-cols-2 gap-1 md:grid-cols-4">
-        {ctx.data.indices.map(item => <IndexTicker key={item.symbol} item={item} />)}
+        {ctx.data.indices.map(item => (
+          <IndexTicker key={item.symbol} item={item}
+            onOpen={ctx.market === 'crypto' ? (i => ctx.openStock('indices', i.symbol, i.name ?? undefined)) : undefined} />
+        ))}
       </div>
     ),
   },
@@ -221,9 +226,12 @@ export const WIDGET_DEFS: WidgetDef[] = [
   },
   {
     id: 'concept-rank', label: '概念热度', icon: Flame, minW: 3, minH: 6, defW: 6, defH: 8,
-    markets: ['stock'],
+    // crypto: 概念 = 本地映射聚合 (DeFi/MEME/L1 等, 配置经 /api/crypto/concepts)
+    markets: ['stock', 'crypto'],
     render: ctx => (
-      <HotRankCard title="概念热度" rank={ctx.data.concept_rank} configUrl="/concept-analysis"
+      <HotRankCard title="概念热度" rank={ctx.data.concept_rank}
+        configUrl={ctx.market === 'crypto' ? '' : '/concept-analysis'}
+        emptyHint={ctx.market === 'crypto' ? '未配置概念映射 (PUT /api/crypto/concepts)' : undefined}
         activeSymbol={ctx.activeSymbol('concept')}
         onStockClick={(symbol, name) => ctx.openStock('concept', symbol, name, rankNav(ctx.data.concept_rank))}
         onDimensionClick={ctx.openDimension} />
@@ -345,11 +353,24 @@ export const DEFAULT_LAYOUT_CRYPTO: DashboardItem[] = [
   { i: 'kpi', t: 'kpi', x: 0, y: 2, w: 12, h: 2 },
   { i: 'distribution', t: 'distribution', x: 0, y: 4, w: 3, h: 8 },
   { i: 'sentiment', t: 'sentiment', x: 3, y: 4, w: 3, h: 10 },
-  { i: 'trend', t: 'trend', x: 6, y: 4, w: 3, h: 8 },
+  { i: 'concept-rank', t: 'concept-rank', x: 6, y: 4, w: 3, h: 8 },
+  { i: 'trend', t: 'trend', x: 6, y: 12, w: 3, h: 8 },
   { i: 'gainers', t: 'gainers', x: 9, y: 4, w: 3, h: 10 },
   { i: 'losers', t: 'losers', x: 0, y: 12, w: 3, h: 10 },
   { i: 'turnover', t: 'turnover', x: 3, y: 14, w: 3, h: 10 },
   { i: 'news', t: 'news', x: 6, y: 14, w: 6, h: 12 },
+]
+
+/** 美股默认布局 — 白名单口径 (无涨跌停/换手/情绪语义, 无 sentiment widget) */
+export const DEFAULT_LAYOUT_US: DashboardItem[] = [
+  { i: 'indices', t: 'indices', x: 0, y: 0, w: 12, h: 2 },
+  { i: 'kpi', t: 'kpi', x: 0, y: 2, w: 12, h: 2 },
+  { i: 'distribution', t: 'distribution', x: 0, y: 4, w: 3, h: 8 },
+  { i: 'trend', t: 'trend', x: 3, y: 4, w: 3, h: 8 },
+  { i: 'gainers', t: 'gainers', x: 6, y: 4, w: 3, h: 10 },
+  { i: 'losers', t: 'losers', x: 9, y: 4, w: 3, h: 10 },
+  { i: 'turnover', t: 'turnover', x: 0, y: 12, w: 3, h: 10 },
+  { i: 'news', t: 'news', x: 3, y: 12, w: 9, h: 12 },
 ]
 
 /** 某市场可见的组件定义 (registry 静态 markets 声明; 后端规则 Feature 门控由 Dashboard 叠加) */

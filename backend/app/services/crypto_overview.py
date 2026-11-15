@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 
 from app.services.market_overview_builder import _finite, _json_safe, _pct_band_rows
 from app.services.trading_rules import get_trading_rules
@@ -190,6 +191,58 @@ def _index_quotes(snapshot_rows: list[dict], local_rows: list[dict]) -> list[dic
     return out
 
 
+def _concept_rank(rows: list[dict], data_dir) -> dict:
+    """本地概念映射聚合 → concept_rank (DeFi/MEME/L1 等板块等价物)。
+
+    rows 为总览行情行 (snapshot 优先, 降级 enriched 最新日), 含
+    symbol/name/change_pct/amount。与 A 股 OverviewDimensionRankItem 同构:
+    按概念聚合成员 change_pct 均值, leading/lagging 各取前 5;
+    source_field=None → 行为静态展示 (不可点开成分弹窗, crypto 无 ext 源)。
+    多概念成员在每个概念内各计一次 (与 A 股多概念归属同口径)。
+    """
+    from app.services import crypto_concepts
+
+    mapping = crypto_concepts.concept_of_symbol(
+        crypto_concepts.load_concepts(Path(data_dir)))
+    if not mapping or not rows:
+        return dict(_EMPTY_RANK)
+
+    by_symbol = {r.get("symbol"): r for r in rows}
+    buckets: dict[str, list[dict]] = {}
+    for symbol, concepts in mapping.items():
+        row = by_symbol.get(symbol)
+        if row is None:
+            continue  # 白名单外/未同步成员自然落空
+        for name in concepts:
+            buckets.setdefault(name, []).append(row)
+
+    items: list[dict] = []
+    for name, members in buckets.items():
+        pcts = [v for v in (_finite(m.get("change_pct")) for m in members) if v is not None]
+        if not pcts:
+            continue
+        leader = max(members, key=lambda m: _finite(m.get("change_pct")) or 0)
+        items.append({
+            "name": name,
+            "count": len(members),
+            "avg_pct": sum(pcts) / len(pcts),
+            "up_count": sum(1 for v in pcts if v > 0),
+            "down_count": sum(1 for v in pcts if v < 0),
+            "amount": sum(_finite(m.get("amount")) or 0 for m in members),
+            "source_field": None,
+            "leader": {
+                "symbol": leader.get("symbol"),
+                "name": leader.get("name"),
+                "change_pct": _finite(leader.get("change_pct")),
+            },
+        })
+    by_avg_desc = sorted(items, key=lambda x: x["avg_pct"], reverse=True)
+    by_avg_asc = sorted(items, key=lambda x: x["avg_pct"])
+    # 与 A 股 _dimension_rank 同口径: leading = 降序前 5, lagging = 升序前 5
+    # (总概念数 < 10 时两者允许重叠, 前端两列各取前 5 展示)
+    return {"leading": by_avg_desc[:5], "lagging": by_avg_asc[:5]}
+
+
 def build_crypto_overview(repo, as_of: date | None = None) -> dict:
     """装配 crypto 市场总览 — 顶层键与 A 股 OverviewMarket 对齐, 便于前端复用。
 
@@ -216,6 +269,7 @@ def build_crypto_overview(repo, as_of: date | None = None) -> dict:
     pct_values = [v for v in (_finite(r.get("change_pct")) for r in rows) if v is not None]
 
     trend, activity = _trend_and_activity(repo)
+    repo_data_dir = repo.store.data_dir
 
     return _json_safe({
         "market": "crypto",
@@ -255,6 +309,6 @@ def build_crypto_overview(repo, as_of: date | None = None) -> dict:
         "top_losers": _top_rows(rows, "change_pct", False),
         "turnover_leaders": _top_rows(rows, "amount", True),
         "active_leaders": [],  # 无换手率口径
-        "concept_rank": dict(_EMPTY_RANK),
+        "concept_rank": _concept_rank(rows, repo_data_dir),
         "industry_rank": dict(_EMPTY_RANK),
     })

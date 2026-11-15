@@ -337,7 +337,7 @@ def test_factors_api_contract() -> None:
     assert first["id"] == "momentum_5d"
     assert first["kind"] == "base"
     assert first["formula"] == "5个交易日累计收益率"
-    assert first["asset_types"] == ["crypto", "etf", "stock"]  # OHLCV 类因子三市场通用
+    assert first["asset_types"] == ["crypto", "etf", "stock", "us"]  # OHLCV 类因子全市场通用
     ma20 = next(item for item in factors if item["id"] == "ma20_bias")
     assert ma20["kind"] == "virtual"
     assert ma20["dependencies"] == ["close", "ma20"]

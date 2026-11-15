@@ -799,13 +799,13 @@ const StrategyParamInput = memo(function StrategyParamInput({ param, value, onCh
   )
 })
 
-function StockPoolPicker({ value, onChange, assetType = 'stock' }: { value: string; onChange: (value: string) => void; assetType?: 'stock' | 'etf' | 'crypto' }) {
+function StockPoolPicker({ value, onChange, assetType = 'stock' }: { value: string; onChange: (value: string) => void; assetType?: 'stock' | 'etf' | 'crypto' | 'us' }) {
   const symbols = useMemo(() => value.split(',').map(s => s.trim()).filter(Boolean), [value])
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [symbolNames, setSymbolNames] = useState<Record<string, string>>({})
   const ref = useRef<HTMLDivElement>(null)
-  const searchAssetTypes = assetType === 'etf' ? 'stock,etf' : assetType === 'crypto' ? 'crypto' : 'stock'
+  const searchAssetTypes = assetType === 'etf' ? 'stock,etf' : assetType === 'crypto' ? 'crypto' : assetType === 'us' ? 'us' : 'stock'
   const search = useQuery({
     queryKey: QK.instrumentSearch(query, searchAssetTypes),
     queryFn: () => api.instrumentSearch(query, 20, searchAssetTypes),
@@ -980,7 +980,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const [selectedStrategy, setSelectedStrategy] = useState<string | null>(saved?.selectedStrategy ?? null)
   const [strategyGroup, setStrategyGroup] = useState<StrategyGroup>('all')
   const [symbols, setSymbols] = useState(saved?.symbols ?? '')
-  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto'>(saved?.assetType ?? 'stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto' | 'us'>(saved?.assetType ?? 'stock')
   const [start, setStart] = useState(saved?.start ?? THREE_MONTHS_AGO)
   const [end, setEnd] = useState(saved?.end ?? TODAY)
   // 成交口径: 建仓/清仓可独立配置。向后兼容老 matching (派生为 entry=exit=matching)。
@@ -1038,7 +1038,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     if (!loadCandidate) return
     const cfg = (loadCandidate.config ?? {}) as Record<string, any>
     if (cfg.strategy_id) setSelectedStrategy(String(cfg.strategy_id))
-    if (cfg.asset_type === 'stock' || cfg.asset_type === 'etf' || cfg.asset_type === 'crypto') setAssetType(cfg.asset_type)
+    if (cfg.asset_type === 'stock' || cfg.asset_type === 'etf' || cfg.asset_type === 'crypto' || cfg.asset_type === 'us') setAssetType(cfg.asset_type)
     if (cfg.symbols != null) {
       setSymbols(Array.isArray(cfg.symbols) ? cfg.symbols.join(',') : String(cfg.symbols))
     }
@@ -1149,13 +1149,15 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     ? dataStatus.data?.etf_enriched
     : assetType === 'crypto'
       ? dataStatus.data?.crypto_enriched
-      : dataStatus.data?.enriched
+      : assetType === 'us'
+        ? dataStatus.data?.us_enriched
+        : dataStatus.data?.enriched
   const earliestDate = backtestDataStatus?.earliest_date ?? null
   // 预热/同步/修复期间统计为 null 是未知态 (stats_pending 契约, 同 Dashboard.isDataStatusPending),
   // 不得误判成"缺数据"禁用回测 — 等真实统计就绪再判
   const statsPending = dataStatus.data?.stats_pending === true || dataStatus.data?.indicators_ready === false
   const backtestDataUnavailable = dataStatus.isSuccess && !statsPending && !earliestDate
-  const backtestDataLabel = assetType === 'etf' ? 'ETF 指标数据' : assetType === 'crypto' ? '加密货币指标数据' : '股票指标数据'
+  const backtestDataLabel = assetType === 'etf' ? 'ETF 指标数据' : assetType === 'crypto' ? '加密货币指标数据' : assetType === 'us' ? '美股指标数据' : '股票指标数据'
 
   const resetConfigFromDetail = (detail: StrategyDetail) => {
     setStrategyParams(strategyDefaultParams(detail))
@@ -3293,7 +3295,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-muted">资产类型</span>
                     <div className="inline-flex h-8 rounded-btn border border-border overflow-hidden">
-                      {(['stock', 'etf', 'crypto'] as const).map(t => (
+                      {(['stock', 'etf', 'crypto', 'us'] as const).map(t => (
                         <button
                           key={t}
                           type="button"
@@ -3301,7 +3303,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                           className={`h-full px-3 text-xs font-medium transition-colors cursor-pointer
                             ${assetType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'}`}
                         >
-                          {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '加密货币'}
+                          {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : t === 'crypto' ? '加密货币' : '美股'}
                         </button>
                       ))}
                     </div>

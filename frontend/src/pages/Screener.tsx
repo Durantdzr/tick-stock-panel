@@ -47,7 +47,7 @@ import {
 const SHOW_STRATEGY_STORE = false
 
 export function Screener() {
-  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto'>('stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'crypto' | 'us'>('stock')
   // 周期显示筛选: 全部 / 日线 / 分钟 — 只过滤卡片显示, 不影响池和执行;
   // 执行按每个策略自己声明的 timeframes 路由 (日线走盘后缓存, 分钟走本地分钟K分区)
   const [tfFilter, setTfFilter] = useState<'all' | '1d' | '1m'>('all')
@@ -820,7 +820,7 @@ export function Screener() {
   }, [monitorRules.data])
 
   const toggleStrategyMonitor = (strategyId: string, strategyName: string) => {
-    if (assetType === 'crypto') return // crypto 暂无实时监控 (相位机为 A 股专用), 监控按钮不生效
+    if (assetType !== 'stock') return // 实时监控相位机为 A 股专用, 非 A 股市场监控按钮不生效
     const existingRuleId = strategyMonitorMap.get(`${assetType}:${strategyId}`)
     if (existingRuleId) {
       // 已监控 → 删除规则
@@ -882,7 +882,7 @@ export function Screener() {
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             {/* 资产类型切换: 股票 / ETF / 加密货币 (分钟策略仅 A 股, ETF/crypto 列表自然不含) */}
             <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
-              {(['stock', 'etf', 'crypto'] as const).map(t => (
+              {(['stock', 'etf', 'crypto', 'us'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => { setAssetType(t); setActiveStrategy(null); setResult(null); setShowAll(false) }}
@@ -892,7 +892,7 @@ export function Screener() {
                       : 'text-muted hover:text-secondary hover:bg-elevated'
                     }`}
                 >
-                  {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '加密货币'}
+                  {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : t === 'crypto' ? '加密货币' : '美股'}
                 </button>
               ))}
             </div>
@@ -1092,7 +1092,7 @@ export function Screener() {
                   disabled={run.isPending && activeStrategy === s.id}
                   onSettings={() => setSettingsStrategyId(s.id)}
                   monitored={strategyMonitorMap.has(`${assetType}:${s.id}`)}
-                  onToggleMonitor={assetType === 'crypto' ? undefined : () => toggleStrategyMonitor(s.id, s.name)}
+                  onToggleMonitor={assetType === 'stock' ? () => toggleStrategyMonitor(s.id, s.name) : undefined}
                   timeframeBadge={isMinute ? '分钟' : undefined}
                 />
               )

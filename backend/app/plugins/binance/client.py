@@ -11,6 +11,7 @@ ticker 字段命名一致), 统一在本层归一。
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
@@ -46,10 +47,19 @@ class BinanceClient:
         base = _MARKET_BASES.get(market)
         if base is None:
             raise BinanceError(f"未知币安市场: {market}")
-        try:
-            resp = self._http.get(f"{base}{path}", params=params)
-        except httpx.HTTPError as e:
-            raise BinanceError(f"网络请求失败: {e}") from e
+        # 传输级重试: 本机经代理访问币安时, 代理间歇抖动 (SSL EOF) 是主要失败形态,
+        # 短退避重试可吸收 — 逐标的放弃会让整轮同步残缺。
+        last_err: httpx.HTTPError | None = None
+        for attempt in range(3):
+            try:
+                resp = self._http.get(f"{base}{path}", params=params)
+                break
+            except httpx.HTTPError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))  # 1s / 2s 退避
+        else:
+            raise BinanceError(f"网络请求失败(重试{3}次): {last_err}") from last_err
         if resp.status_code != 200:
             # 币安错误信封 {"code": -1121, "msg": "Invalid symbol."}
             detail = ""

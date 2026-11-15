@@ -31,14 +31,17 @@ export function rankNav(rank?: OverviewMarket['concept_rank']): NavItem[] {
 }
 
 // ===== 指数行情条 =====
-export function IndexTicker({ item }: { item: OverviewMarket['indices'][number] }) {
+// onOpen: crypto 主流币卡走预览弹窗 (指数页固定核心四只, 不认 crypto 代码);
+// 缺省保持 A股 指数条 /indices 跳转不变。
+export function IndexTicker({ item, onOpen }: {
+  item: OverviewMarket['indices'][number]
+  onOpen?: (item: OverviewMarket['indices'][number]) => void
+}) {
   const pct = item.change_pct
   const isUp = (pct ?? 0) >= 0
-  return (
-    <Link
-      to={`/indices?symbol=${encodeURIComponent(item.symbol)}`}
-      className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-lg border border-border bg-elevated/45 px-1.5 py-1 shadow-[0_1px_1px_hsl(var(--border)/0.3)] backdrop-blur-sm transition-all hover:border-accent/40 hover:bg-elevated hover:shadow-[0_2px_6px_hsl(var(--accent)/0.15)]"
-    >
+  const classes = "grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-lg border border-border bg-elevated/45 px-1.5 py-1 shadow-[0_1px_1px_hsl(var(--border)/0.3)] backdrop-blur-sm transition-all hover:border-accent/40 hover:bg-elevated hover:shadow-[0_2px_6px_hsl(var(--accent)/0.15)]"
+  const content = (
+    <>
       <div className="truncate text-xs font-medium text-foreground">{item.name || item.symbol}</div>
       <div className={`font-mono text-xs font-semibold ${pctClass(pct)}`}>{fmtIndexPct(pct)}</div>
       <div className="font-mono text-[10px] text-muted">{item.symbol}</div>
@@ -46,6 +49,18 @@ export function IndexTicker({ item }: { item: OverviewMarket['indices'][number] 
         {isUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
         {fmtPrice(item.last_price)}
       </div>
+    </>
+  )
+  if (onOpen) {
+    return (
+      <button type="button" className={`${classes} text-left`} onClick={() => onOpen(item)}>
+        {content}
+      </button>
+    )
+  }
+  return (
+    <Link to={`/indices?symbol=${encodeURIComponent(item.symbol)}`} className={classes}>
+      {content}
     </Link>
   )
 }
@@ -331,8 +346,8 @@ export function RankColumn({ title, rows, tone, onStockClick, onDimensionClick, 
 }
 
 // ===== 概念/行业热度卡 =====
-export function HotRankCard({ title, rank, configUrl, onStockClick, onDimensionClick, activeSymbol }: {
-  title: string; rank?: OverviewMarket['concept_rank']; configUrl: string;
+export function HotRankCard({ title, rank, configUrl, emptyHint, onStockClick, onDimensionClick, activeSymbol }: {
+  title: string; rank?: OverviewMarket['concept_rank']; configUrl: string; emptyHint?: string;
   onStockClick?: (symbol: string, name?: string) => void;
   onDimensionClick?: (target: DimensionMembersTarget) => void;
   activeSymbol?: string;
@@ -348,13 +363,15 @@ export function HotRankCard({ title, rank, configUrl, onStockClick, onDimensionC
         </div>
       ) : (
         <div className="py-4 text-center">
-          <p className="text-[11px] text-muted">未配置扩展数据源</p>
-          <Link
-            to={configUrl}
-            className="mt-1.5 inline-block text-[11px] text-accent hover:text-accent/80 transition-colors"
-          >
-            前往配置 →
-          </Link>
+          <p className="text-[11px] text-muted">{emptyHint ?? '未配置扩展数据源'}</p>
+          {configUrl && (
+            <Link
+              to={configUrl}
+              className="mt-1.5 inline-block text-[11px] text-accent hover:text-accent/80 transition-colors"
+            >
+              前往配置 →
+            </Link>
+          )}
         </div>
       )}
     </section>

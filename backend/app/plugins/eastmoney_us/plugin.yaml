@@ -1,0 +1,12 @@
+# 东方财富美股公开行情插件 (非官方, push2.eastmoney.com 公开端点, fs=m:105/106/107)。
+# 纯 HTTP REST, 无需 API Key。asset_types: [us] — 声明后不进入 A 股 7 能力路由
+# 候选, 由美股同步服务 (services/us_sync.py) 专用。
+
+name: eastmoney_us
+display_name: "东方财富·美股"
+runtime: none
+entry: app.plugins.eastmoney_us.provider:EastmoneyUSProvider
+check: app.plugins.eastmoney_us.provider:availability
+datasets: [realtime, daily, minute]
+asset_types: [us]
+description: "东方财富美股公开行情(非官方)。全市场目录(约1.4万只, NASDAQ/NYSE/AMEX)、日K(原始价, 美东交易日口径)与1分钟K(北京墙钟时间戳)。免费接口有限频, provider 内置节流。"

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { EndpointTestDialog } from '@/components/EndpointTestDialog'
+import { toast } from '@/components/Toast'
 import { api, type ExtDataConfig } from '@/lib/api'
 import {
   useCapabilities,
@@ -49,7 +50,7 @@ import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { DataIntegrityPanel } from '@/components/data/DataIntegrityPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
 import { FinancialSyncPanel } from '@/components/data/FinancialSyncPanel'
-import { CryptoSyncConfig } from '@/components/data/CryptoSyncConfig'
+import { MarketSyncSection } from '@/components/data/MarketSyncSection'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { AdjFactorSyncConfig } from '@/components/data/AdjFactorSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
@@ -190,6 +191,14 @@ export function Data() {
   })
 
   const prefs = usePreferences()
+
+  // 数据页分市场 (A股/crypto/us): 偏好持久化, 不与看板 dashboard_market 联动
+  const pageMarket = prefs.data?.data_page_market ?? 'stock'
+  const updatePageMarket = useMutation({
+    mutationFn: api.updateDataPageMarket,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.preferences }),
+    onError: (e: unknown) => toast(`市场切换保存失败: ${(e as Error)?.message ?? e}`, 'error'),
+  })
 
   // 数据源列表 + 当前数据源 (顶部"切换数据源"按钮展示)
   const dataSources = useQuery({
@@ -554,8 +563,23 @@ export function Data() {
               { label: '指标', table: 'crypto_enriched' },
             ] as FieldTab[]}
             onShowFields={(t) => setSchemaTable(t ?? 'crypto_enriched')}
-            onSettings={() => setOpenSettings(v => v === 'crypto' ? null : 'crypto')}
-            settingsOpen={openSettings === 'crypto'}
+          />
+        )
+      case 'us':
+        return (
+          <StatCard
+            title="美股"
+            hint="东财 · 独立同步"
+            stats={s?.us_enriched}
+            loading={isLoading}
+            tierKey="us"
+            capLimits={mergedCaps}
+            subLabel="权重股 · 日K · 指标"
+            fieldTabs={[
+              { label: '维表', table: 'us_instruments' },
+              { label: '指标', table: 'us_enriched' },
+            ] as FieldTab[]}
+            onShowFields={(t) => setSchemaTable(t ?? 'us_enriched')}
           />
         )
       case 'minute':
@@ -630,6 +654,7 @@ export function Data() {
         subtitle="本地数据画像 · 同步状态 · 历史记录"
         right={
           <div className="flex items-center gap-3">
+            {pageMarket === 'stock' && (<>
             <button
               onClick={() => adjGate.guard(() => startSync.mutate())}
               disabled={isStarting}
@@ -670,7 +695,9 @@ export function Data() {
               自检/修补
             </button>
             <div className="w-px h-4 bg-border" />
+            </>)}
             <div className="flex items-center gap-1.5">
+              {pageMarket === 'stock' && (<>
               <button
                 onClick={() => setShowCreateExt(true)}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
@@ -687,6 +714,7 @@ export function Data() {
                 测试端点
               </button>
               )}
+              </>)}
               <button
                 onClick={() => setOpenSettings('page-settings')}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
@@ -703,6 +731,7 @@ export function Data() {
                 <Database className="h-3.5 w-3.5" />
                 <span className="text-foreground/80 max-w-[120px] truncate">{activeDataSourceName}</span>
               </Link>
+              {pageMarket === 'stock' && (
               <button
                 onClick={() => setShowClearConfirm(true)}
                 disabled={isRunning}
@@ -711,12 +740,32 @@ export function Data() {
                 <Trash2 className="h-3.5 w-3.5" />
                 清除数据
               </button>
+              )}
             </div>
           </div>
         }
       />
 
       <div className="mx-auto px-8 py-6 space-y-6 max-w-6xl">
+        {/* 分市场切换 (A股/crypto/us): 偏好持久化, crypto/us 走市场专用同步区块 */}
+        <div className="flex items-center gap-1 p-1 rounded-card border border-border bg-surface w-fit">
+          {([['stock', 'A股'], ['crypto', '加密货币'], ['us', '美股']] as const).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => updatePageMarket.mutate(m)}
+              disabled={updatePageMarket.isPending}
+              className={`px-3 py-1 rounded-btn text-xs font-medium transition-colors ${
+                pageMarket === m ? 'bg-accent/15 text-accent' : 'text-secondary hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {pageMarket !== 'stock' && <MarketSyncSection market={pageMarket} />}
+
+        {pageMarket === 'stock' && (<>
         {/* 无 Key 提示 —— 非阻断: 历史日K走免费通道, 实时等能力取决于所选数据源 */}
         {isNoKey && (
           <div className="flex items-center gap-2 rounded-card border border-border bg-elevated/40 px-3 py-2 text-xs">
@@ -1018,6 +1067,7 @@ export function Data() {
             启动失败:{String((startSync.error as any).message)}
           </div>
         )}
+        </>)}
       </div>
 
       {/* 弹窗 */}
@@ -1243,13 +1293,7 @@ export function Data() {
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {openSettings === 'crypto' && (
-          <SettingsModal title="加密货币 · 数据同步" onClose={() => setOpenSettings(null)}>
-            <CryptoSyncConfig onClose={() => setOpenSettings(null)} />
-          </SettingsModal>
-        )}
-      </AnimatePresence>
+      {/* crypto/us 同步弹窗已下线: 配置入口移至市场切换后的同步区块 (MarketSyncSection) */}
 
       <AnimatePresence>
         {openSettings === 'adj_factor' && (

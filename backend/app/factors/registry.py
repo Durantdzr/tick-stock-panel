@@ -25,9 +25,9 @@ Unit = Literal["ratio", "pct", "score", "count", "days", "currency", "none"]
 PitSource = Literal["financial_announce", "share_capital_announce", "none"]
 Stability = Literal["stable", "experimental", "deprecated"]
 
-# crypto enriched 运行时缺 turnover_rate / consecutive_limit_* (无股本/无涨跌停),
-# 依赖这些列的因子维持 stock/etf (fail-closed); 其余 OHLCV/指标类因子三市场通用。
-_ALL_ASSETS = frozenset({"stock", "etf", "crypto"})
+# crypto/us enriched 运行时缺 turnover_rate / consecutive_limit_* (无股本/无涨跌停),
+# 依赖这些列的因子维持 stock/etf (fail-closed); 其余 OHLCV/指标类因子全市场通用。
+_ALL_ASSETS = frozenset({"stock", "etf", "crypto", "us"})
 _STOCK_ETF = frozenset({"stock", "etf"})
 _STOCK_ONLY = frozenset({"stock"})
 
