@@ -30,30 +30,40 @@ import { IconStockFocus } from '@/components/BrandIcons'
 export function StockAnalysis() {
   const [symbol, setSymbol] = useState<string>('')
   const [name, setName] = useState<string>('')
+  const [assetType, setAssetType] = useState<string | undefined>(undefined)
   const [checking, setChecking] = useState(false)
   const [confirmReport, setConfirmReport] = useState<{ id: string; created_at: string; focus: string } | null>(null)
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [showPriceAlerts, setShowPriceAlerts] = useState(false)
   const { last: lastStock, remember: rememberStock } = useLastStock('stock-analysis')
 
+  // crypto/us 无实时行情相位机 (trading_rules realtime_monitor fail-closed), 价格提醒不适用
+  const noRealtimeMonitor = assetType === 'crypto' || assetType === 'us'
+  const noRealtimeHint = noRealtimeMonitor
+    ? `实时监控未对${assetType === 'crypto' ? '加密货币' : '美股'}开放 (无 A 股交易时段相位机), 价格点位提醒不适用`
+    : undefined
+
   // 进入页面立即加载历史报告(供右侧常驻列表)。store 内部有 historyLoaded 去重, 重复调用安全。
   useEffect(() => { loadHistory() }, [])
 
   // 自动恢复上次选中的股票(切走再回来不丢)。useLastStock 的 last 来自 localStorage, 同步可用。
+  // asset_type 旧记录可能缺键 (undefined) — 门控按 A 股处理, 误点时后端 400 + toast 兜底。
   useEffect(() => {
     if (!symbol && lastStock) {
       setSymbol(lastStock.symbol)
       setName(lastStock.name)
+      setAssetType(lastStock.asset_type)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const onSelect = (sym: string, nm: string) => {
+  const onSelect = (sym: string, nm: string, at?: string) => {
     setSymbol(sym)
     setName(nm)
+    setAssetType(at)
     setConfirmReport(null)
     setShowPriceAlerts(false)
-    rememberStock(sym, nm)
+    rememberStock(sym, nm, at)
   }
 
   const handleAnalyze = async () => {
@@ -83,7 +93,9 @@ export function StockAnalysis() {
     <>
       <PageHeader
         title="个股分析"
-        subtitle="日 K · 关键价位 · AI 四维分析(技术 / 基本面 / 财务 / 消息面)"
+        subtitle={assetType === 'crypto' || assetType === 'us'
+          ? `日 K · 关键价位 · AI 技术面分析（${assetType === 'crypto' ? '加密货币' : '美股'}无财务维度, 仅基于价量与关键价位）`
+          : '日 K · 关键价位 · AI 四维分析(技术 / 基本面 / 财务 / 消息面)'}
         right={
           <div className="flex items-center gap-2">
             <LastStockChip stock={lastStock} onSelect={onSelect} />
@@ -95,7 +107,7 @@ export function StockAnalysis() {
         {/* 搜索栏 */}
         <div className="flex items-center gap-3">
           <div className="w-72">
-            <StockFinancialSearch onSelect={onSelect} assetTypes="stock,index" />
+            <StockFinancialSearch onSelect={onSelect} assetTypes="stock,index,crypto,us" />
           </div>
           {symbol && (
             <>
@@ -117,9 +129,13 @@ export function StockAnalysis() {
                 AI 个股分析
               </button>
               <button
-                onClick={() => setShowPriceAlerts(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn border border-sky-400/25 bg-sky-400/[0.08] text-sky-300 text-xs font-medium hover:border-sky-400/40 hover:bg-sky-400/[0.12] transition-all"
-                title="设置价格点位提醒"
+                onClick={() => {
+                  if (noRealtimeMonitor) { toast(noRealtimeHint!, 'error'); return }
+                  setShowPriceAlerts(true)
+                }}
+                disabled={noRealtimeMonitor}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn border border-sky-400/25 bg-sky-400/[0.08] text-sky-300 text-xs font-medium hover:border-sky-400/40 hover:bg-sky-400/[0.12] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title={noRealtimeHint ?? '设置价格点位提醒'}
               >
                 <Bell className="h-3.5 w-3.5" />
                 点位提醒

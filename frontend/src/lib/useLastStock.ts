@@ -13,15 +13,15 @@ import { useCallback, useState } from 'react'
  *   <LastStockChip stock={last} ... />  // 渲染在 PageHeader 右侧
  */
 
-export interface StockRef { symbol: string; name: string }
+export interface StockRef { symbol: string; name: string; asset_type?: string }
 
 const PREFIX = 'last_stock:'
 
 export function useLastStock(scope: string) {
   const [last, setLast] = useState<StockRef | null>(() => load(scope))
 
-  const remember = useCallback((symbol: string, name: string) => {
-    const ref = { symbol, name }
+  const remember = useCallback((symbol: string, name: string, asset_type?: string) => {
+    const ref: StockRef = asset_type ? { symbol, name, asset_type } : { symbol, name }
     setLast(ref)
     save(scope, ref)
   }, [scope])

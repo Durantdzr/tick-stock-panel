@@ -10,12 +10,12 @@ export function LastStockChip({
   onSelect,
 }: {
   stock: StockRef | null
-  onSelect?: (symbol: string, name: string) => void
+  onSelect?: (symbol: string, name: string, assetType?: string) => void
 }) {
   if (!stock) return null
   return (
     <button
-      onClick={() => onSelect?.(stock.symbol, stock.name)}
+      onClick={() => onSelect?.(stock.symbol, stock.name, stock.asset_type)}
       title={`继续查看 ${stock.name}`}
       className="group inline-flex items-center gap-1.5 rounded-lg border border-border/40 bg-elevated/40 px-2 py-1 hover:border-border hover:bg-elevated transition-colors"
     >

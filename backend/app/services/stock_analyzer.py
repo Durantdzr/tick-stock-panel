@@ -274,6 +274,21 @@ def _build_user_prompt(
             "不要编造公司财务数字,也不要写成「财务接入中」;"
             "消息面维度基于价量异动推断即可。)",
         ])
+    elif asset_type == "crypto":
+        parts.extend([
+            "",
+            "(该标的为加密货币: 无财务报表、股本与涨跌停概念,基本面/财务面维度不适用,"
+            "这是资产类型常态而非数据缺失。请仅基于价量、技术指标与关键价位做分析,"
+            "不要编造 ROE/营收等数字,也不要表述为财务数据缺失或待接入;"
+            "消息面维度基于价量异动推断即可。)",
+        ])
+    elif asset_type == "us":
+        parts.extend([
+            "",
+            "(该标的为美股: 当前数据源未提供财务报表,基本面/财务面维度暂无法评估。"
+            "请仅基于价量与关键价位做技术分析,不要编造 ROE/营收等数字,也不要写成「财务接入中」;"
+            "消息面维度基于价量异动推断即可。)",
+        ])
     else:
         parts.extend([
             "",
@@ -342,9 +357,9 @@ async def analyze_stock_stream(
     levels = compute_levels(df)
     close = float(df.tail(1)["close"][0]) if "close" in df.columns else None
 
-    # 3. 财务(辅助)。ETF/指数无公司报表, 跳过扫描, 由提示词走对应常态文案。
+    # 3. 财务(辅助)。ETF/指数/加密货币/美股无公司报表, 跳过扫描, 由提示词走对应常态文案。
     asset_type = repo.resolve_asset_type(symbol)
-    fins = {} if asset_type in {"etf", "index"} else _load_financials(data_dir, symbol)
+    fins = {} if asset_type in {"etf", "index", "crypto", "us"} else _load_financials(data_dir, symbol)
 
     # 4. meta
     yield json.dumps({

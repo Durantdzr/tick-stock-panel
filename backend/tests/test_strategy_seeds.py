@@ -56,9 +56,9 @@ def test_seed_writes_all_and_marks(tmp_path):
     _make_upgrade_dir(tmp_path)
     n = seed_missing_builtins(tmp_path)
 
-    assert n == _EXPECTED_COUNT == 25
+    assert n == _EXPECTED_COUNT == 30
     custom = tmp_path / "strategies" / "custom"
-    assert len(list(custom.glob("*.py"))) == 25
+    assert len(list(custom.glob("*.py"))) == 30
     assert (custom / ".seeded_v1").exists()
     # 幂等: 标记存在, 再次启动零写入
     assert seed_missing_builtins(tmp_path) == 0
@@ -99,4 +99,4 @@ def test_seeded_strategies_load_in_engine(tmp_path):
     engine = StrategyEngine(strategy_dirs=[tmp_path / "strategies" / "custom"])
 
     assert not engine.load_errors(), engine.load_errors()
-    assert len(engine.list_strategies()) == 25
+    assert len(engine.list_strategies()) == _EXPECTED_COUNT

@@ -89,3 +89,32 @@ def test_paper_position_part_prefers_raw_close():
     part = _paper_position_part([{"qty": 100, "avg_cost": 20.0}], close=11.0, raw_close=21.0)
     assert "+5.00%" in part
     assert "-45" not in part
+
+
+def test_user_prompt_crypto_no_financials():
+    """crypto 无财务/股本/涨跌停是资产类型常态: 不得走 Free/接入中文案,
+    须明确告知 AI 仅基于价量与关键价位分析、不得编造财务数字。"""
+    prompt = _build_user_prompt(
+        kline_tail=[{"date": "2026-11-14", "close": 1811.48}],
+        fins={"metrics": [], "income": []},
+        levels={}, close=1811.48, symbol="ETHUSDT", focus="",
+        asset_type="crypto",
+    )
+    assert "加密货币" in prompt
+    assert "不适用" in prompt
+    assert "Free 模式" not in prompt
+    assert "尚未同步财务报表" not in prompt
+    assert "接入中" not in prompt
+
+
+def test_user_prompt_us_no_financials():
+    """美股当前数据源无财务表: 不走 Free/接入中文案, 明确技术面为主。"""
+    prompt = _build_user_prompt(
+        kline_tail=[{"date": "2026-11-14", "close": 230.0}],
+        fins={"metrics": [], "income": []},
+        levels={}, close=230.0, symbol="AAPL", focus="",
+        asset_type="us",
+    )
+    assert "美股" in prompt
+    assert "Free 模式" not in prompt
+    assert "尚未同步财务报表" not in prompt
