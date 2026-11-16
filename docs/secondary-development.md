@@ -259,6 +259,21 @@ def setup(registrar: BackendExtensionRegistrar) -> None:
 - 扩展只需要装饰默认结果，而不是完全替换算法。
 - 依赖缓存、仓库或通知服务，需要通过明确构造参数注入。
 
+### 4.5 KiT 扩散模型预测扩展（已实现）
+
+个股分析页的「KiT 预测」由后端扩展 `backend/app/custom/kit_prediction.py`（`EXTENSION_ID = "kit.prediction"`，路由 `POST /api/kit/predict`，NDJSON 流式）提供服务，服务层在 `backend/app/services/kit_prediction.py`。外部模型 [KiT](https://github.com/Luciferbobo/KiT)（AGPL-3.0）以**独立 venv + 子进程**方式调用，其代码不进本仓库。
+
+安装与环境契约：
+
+- 环境根目录：`<data_dir>/models/kit/`（开发态即仓库 `data/models/kit/`，`data/` 已 git-ignore；桌面包模式传应用数据目录）。
+- 一次性搭建：`bash backend/scripts/setup_kit.sh [KIT_ROOT]` —— clone KiT、创建 venv（torch + KiT requirements + exchange_calendars）、从 HuggingFace 下载三市场 checkpoint `step_market_284M`（约 1.1GB，训练截止 2025-12-31）。默认走 `hf-mirror.com` 镜像，可用 `HF_ENDPOINT` 覆盖。
+- Intel Mac (Darwin-x86_64)：PyTorch 自 2.3 起停发该平台轮子，脚本自动降级 `torch==2.2.2`（PyPI 统一轮子）并钉 `numpy<2`（ABI 兼容）；KiT 声明 torch>=2.4，实测其用到的 API 均兼容 2.2.2。
+- `exchange_calendars` 的节假日表只发布到当年年底，跨年预测时 runner 自动回退"仅跳周末"（stderr `PROGRESS calendar_fallback_weekend_skip`）；每年建议重跑 setup 或升级该库。
+- 子进程契约：stdin JSON（`kit_root/ckpt/symbol/market/timescale/bars/pred_len/paths/steps/seed`），stdout 最后一行结果 JSON，stderr `PROGRESS <token>` 进度行；详见 `backend/scripts/kit_predict_runner.py` 模块注释。
+- 默认 `paths=8, steps=16`（Intel Mac CPU 实测约 4 分钟；`16×32` 约 16 分钟会撞 900s 子进程超时）。
+- 数据口径：喂 KiT 的是 enriched **前复权** OHLCV（其特征定义要求 adjusted prices），锚点只用**已收盘**日线（盘中丢弃当日 partial bar，按市场规则：A股 15:00 前 / crypto 当日 / 美股 ET 16:10 前）；可用完整日线不足 250 根 fail-closed。
+- 未安装 KiT 环境时该功能 fail-closed（`POST /api/kit/predict` 返回 503 并提示运行 setup 脚本），不影响个股分析其他功能。
+
 ## 5. 直接修改源码
 
 扩展点不是限制。核心流程必须变化时允许直接修改源码，但要把升级成本显式管理。
