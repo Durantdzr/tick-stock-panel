@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell, AlertTriangle } from 'lucide-react'
+import { Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell, AlertTriangle, Wand2 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
@@ -8,7 +8,8 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { LastStockChip } from '@/components/LastStockChip'
 import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
-import { api } from '@/lib/api'
+import { KitForecastCard, useKitPrediction } from '@/components/stock-analysis/KitForecastCard'
+import { api, type KitPrediction } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
 import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
@@ -35,7 +36,13 @@ export function StockAnalysis() {
   const [confirmReport, setConfirmReport] = useState<{ id: string; created_at: string; focus: string } | null>(null)
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [showPriceAlerts, setShowPriceAlerts] = useState(false)
+  const [forecast, setForecast] = useState<KitPrediction | null>(null)
   const { last: lastStock, remember: rememberStock } = useLastStock('stock-analysis')
+  // KiT 预测 hook: 按钮在页头, 进度/摘要卡在看板内; 切股自动重置并清空叠加
+  const kit = useKitPrediction(symbol, setForecast)
+  // index/etf 不支持 KiT 预测 (assetType 缺省按 A 股处理)
+  const kitUnsupported = assetType === 'index' || assetType === 'etf'
+  const kitUnsupportedHint = '指数/ETF 暂不支持 KiT 预测 (仅支持 A股/美股/加密货币)'
 
   // crypto/us 无实时行情相位机 (trading_rules realtime_monitor fail-closed), 价格提醒不适用
   const noRealtimeMonitor = assetType === 'crypto' || assetType === 'us'
@@ -140,6 +147,18 @@ export function StockAnalysis() {
                 <Bell className="h-3.5 w-3.5" />
                 点位提醒
               </button>
+              <button
+                onClick={() => {
+                  if (kitUnsupported) { toast(kitUnsupportedHint, 'error'); return }
+                  kit.run()
+                }}
+                disabled={kit.phase === 'streaming'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn border border-purple-400/30 bg-purple-400/[0.08] text-purple-300 text-xs font-medium hover:border-purple-400/45 hover:bg-purple-400/[0.14] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title={kitUnsupported ? kitUnsupportedHint : 'KiT 扩散模型预测未来 20 根日线 (CPU 推理约 1~3 分钟)'}
+              >
+                {kit.phase === 'streaming' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                KiT 预测
+              </button>
             </>
           )}
         </div>
@@ -154,7 +173,7 @@ export function StockAnalysis() {
                 hint="搜索代码或名称,查看日 K 与关键价位,并可让 AI 进行技术面 / 基本面 / 财务面 / 消息面四维综合分析。"
               />
             ) : (
-              <StockAnalysisBoard symbol={symbol} />
+              <StockAnalysisBoard symbol={symbol} forecast={forecast} kit={kit} />
             )}
           </div>
           <HistorySidebar />
@@ -191,8 +210,8 @@ export function StockAnalysis() {
   )
 }
 
-// ===== 分析看板:日 K + 关键价位 =====
-function StockAnalysisBoard({ symbol }: { symbol: string }) {
+// ===== 分析看板:日 K + 关键价位 + KiT 预测叠加 =====
+function StockAnalysisBoard({ symbol, forecast, kit }: { symbol: string; forecast: KitPrediction | null; kit: ReturnType<typeof useKitPrediction> }) {
   const kline = useQuery({
     // QK 集中键 (start/end 空串 = 滚动最近窗口, 无日期边界)。收益: 键进集中
     // 管理, 且 useQuoteStream 的焦点股增量合并对无边界键生效 — 此前私拼 3 元
@@ -264,10 +283,12 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
           levels={levels}
           series={levelsQ.data?.series}
           seriesDates={levelsQ.data?.dates}
+          forecast={forecast ? { bars: forecast.bars } : undefined}
           defaultLevelTypes={['sr', 'pivot', 'keltner_s']}
           height={480}
         />
       </div>
+      <KitForecastCard kit={kit} />
     </div>
   )
 }
