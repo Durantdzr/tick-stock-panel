@@ -204,6 +204,51 @@ export interface AiFinancialReport {
 // ===== 个股分析 =====
 export type LevelType = 'sr' | 'pivot' | 'extreme' | 'boll' | 'keltner_s' | 'keltner_m' | 'keltner_l' | 'atr_stop' | 'gap' | 'fib' | 'round'
 
+// ===== KiT 扩散模型预测 (POST /api/kit/predict NDJSON) =====
+
+export interface KitPredictionBar {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  close_p10: number
+  close_p90: number
+}
+
+export interface KitPrediction {
+  symbol: string
+  asset_type: string
+  market: string
+  anchor_date: string
+  prev_close: number
+  bars: KitPredictionBar[]
+  summary: {
+    median_return: number
+    p10_return: number
+    p90_return: number
+    median_max_gain: number
+    median_max_drawdown: number
+  }
+  model: {
+    cutoff: string
+    n_paths: number | null
+    steps: number | null
+    elapsed_s: number | null
+    calendar: string | null
+    instrument_matched: boolean
+  }
+}
+
+export interface KitPredictChunk {
+  type: 'stage' | 'done' | 'error' | 'ping'
+  stage?: string
+  detail?: string
+  prediction?: KitPrediction
+  code?: string
+  message?: string
+}
+
 export interface PriceLevel {
   value: number
   label: string
@@ -4605,6 +4650,48 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol, focus: focus ?? '' }),
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { const j = JSON.parse(await res.text()); detail = j.detail ?? j.message ?? '' } catch { /* ignore */ }
+      const msg = detail || `${res.status} ${res.statusText}`
+      toast(msg, 'error')
+      throw new Error(msg)
+    }
+    if (!res.body) throw new Error('响应无 body')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        const s = line.trim()
+        if (!s) continue
+        try { yield JSON.parse(s) } catch { /* ignore */ }
+      }
+    }
+    if (buf.trim()) {
+      try { yield JSON.parse(buf.trim()) } catch { /* ignore */ }
+    }
+  },
+
+  // ===== KiT 扩散模型预测 =====
+
+  /**
+   * KiT 单票日线预测 — 流式调用(NDJSON)。
+   * stage 事件用于进度展示; done 带 prediction(20 根中位路径 + close 分位带 + 摘要);
+   * 错误分两类: HTTP 4xx/5xx(校验, detail 在 body)与 NDJSON error 事件(推理期)。
+   */
+  async *kitPredictStream(symbol: string): AsyncGenerator<KitPredictChunk> {
+    const res = await fetch('/api/kit/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
     })
     if (!res.ok) {
       let detail = ''
