@@ -140,7 +140,7 @@ def test_build_runner_payload_stamps_close_time():
         assert payload["timescale"] == "1d"
         assert payload["symbol"] == "SYM"
         assert payload["pred_len"] == 20
-        assert payload["paths"] == 16 and payload["steps"] == 32 and payload["seed"] == 0
+        assert payload["paths"] == 8 and payload["steps"] == 16 and payload["seed"] == 0
         assert payload["kit_root"] == str(kit_root)
         assert payload["ckpt"] == str(ckpt)
         assert len(payload["bars"]) == 320
@@ -312,3 +312,10 @@ def test_single_flight_lock(tmp_path):
     lock2 = kp.KitPredictLock(tmp_path)
     lock2.acquire()
     lock2.release()
+
+
+def test_runner_path_exists():
+    """_runner_path 必须解析到真实存在的 runner (monkeypatch 测试覆盖不到的集成点)。"""
+    p = kp._runner_path()
+    assert p.is_file(), f"runner 不存在: {p}"
+    assert p.name == "kit_predict_runner.py"

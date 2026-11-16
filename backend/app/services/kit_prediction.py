@@ -163,8 +163,8 @@ def build_runner_payload(
     *,
     kit_root: Path,
     ckpt: Path,
-    paths: int = 16,
-    steps: int = 32,
+    paths: int = 8,
+    steps: int = 16,
     seed: int = 0,
 ) -> dict:
     """enriched 日线 → runner stdin JSON (契约见计划 Task 1)。不足 250 根抛 ValueError。"""
@@ -197,7 +197,7 @@ def build_runner_payload(
 
 
 # ================================================================
-# 单飞锁: 同一 data_dir 同时只允许 1 个预测任务 (CPU 推理 1~3 分钟)
+# 单飞锁: 同一 data_dir 同时只允许 1 个预测任务 (CPU 推理约 4 分钟)
 # ================================================================
 
 class KitPredictLock:
@@ -314,7 +314,8 @@ def summarize_prediction(result: dict, symbol: str, asset_type: str, market: str
 # ================================================================
 
 def _runner_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "scripts" / "kit_predict_runner.py"
+    # app/services/kit_prediction.py → parents[2] = backend/
+    return Path(__file__).resolve().parents[2] / "scripts" / "kit_predict_runner.py"
 
 
 # runner stderr PROGRESS token → 前端 stage
@@ -326,8 +327,8 @@ async def predict_stream(
     data_dir: Path,
     symbol: str,
     *,
-    paths: int = 16,
-    steps: int = 32,
+    paths: int = 8,
+    steps: int = 16,
     seed: int = 0,
     timeout_s: float = 900.0,
 ) -> AsyncIterator[str]:
