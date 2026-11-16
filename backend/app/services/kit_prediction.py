@@ -14,6 +14,7 @@ KiT 代码(AGPL-3.0)只存在于 <data_dir>/models/kit/, 不进本仓库; torch 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from collections.abc import AsyncIterator
@@ -417,7 +418,9 @@ async def predict_stream(
                 return
             stdout = await stdout_task
             await proc.wait()
-            # 排干剩余 stderr, 转发最后的 PROGRESS (sampling 结束等)
+            # 排干剩余 stderr (等 pump 读完缓冲再转发, 避免竞态漏最后几行)
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
             for token in err_lines[forwarded:]:
                 forwarded += 1
                 if token.startswith("PROGRESS"):
@@ -427,16 +430,8 @@ async def predict_stream(
         finally:
             pump_task.cancel()
 
-        if proc.returncode != 0:
-            tail = [x for x in err_lines if not x.startswith("PROGRESS")][-2:]
-            detail = "; ".join(tail) or "无 stderr 输出"
-            yield json.dumps({
-                "type": "error", "code": "inference_failed",
-                "message": f"KiT 推理失败 (exit {proc.returncode}): {detail}",
-            }, ensure_ascii=False)
-            return
-
-        # stdout 最后一行是结果 JSON (前面可能有 load_model_and_config 的 [info]/[warn] 行)
+        # stdout 最后一行是结果 JSON (前面可能有 load_model_and_config 的 [info]/[warn] 行);
+        # 失败时 runner 也把结构化错误打在 stdout, 优先透出它 (比 stderr 尾巴可诊断)
         result = None
         for line in stdout.decode(errors="replace").splitlines():
             line = line.strip()
@@ -447,10 +442,19 @@ async def predict_stream(
                     continue
                 if isinstance(candidate, dict) and "ok" in candidate:
                     result = candidate
-        if result is None or not result.get("ok"):
-            msg = (result or {}).get("error", "runner 无结果输出")
-            yield json.dumps({"type": "error", "code": "inference_failed", "message": msg},
-                             ensure_ascii=False)
+        if result is not None and not result.get("ok"):
+            yield json.dumps({
+                "type": "error", "code": "inference_failed",
+                "message": str(result.get("error", "runner 报告失败 (无 error 详情)")),
+            }, ensure_ascii=False)
+            return
+        if result is None or proc.returncode != 0:
+            tail = [x for x in err_lines if not x.startswith("PROGRESS")][-2:]
+            detail = "; ".join(tail) or (str(result.get("error")) if result else "无 stderr 输出")
+            yield json.dumps({
+                "type": "error", "code": "inference_failed",
+                "message": f"KiT 推理失败 (exit {proc.returncode}): {detail}",
+            }, ensure_ascii=False)
             return
 
         prediction = summarize_prediction(result, symbol, asset_type, market)

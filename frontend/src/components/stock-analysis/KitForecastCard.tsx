@@ -29,10 +29,13 @@ export function useKitPrediction(
   const [stageText, setStageText] = useState('')
   const [result, setResult] = useState<KitPrediction | null>(null)
   const runIdRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
 
-  // 切股重置: 清空结果 + 图表叠加
+  // 切股重置: 中止旧流(服务端随之取消子进程并释放单飞锁) + 清空结果与图表叠加
   useEffect(() => {
     runIdRef.current += 1
+    abortRef.current?.abort()
+    abortRef.current = null
     setPhase('idle')
     setStageText('')
     setResult(null)
@@ -43,11 +46,13 @@ export function useKitPrediction(
   const run = async () => {
     if (!symbol || phase === 'streaming') return
     const myRun = ++runIdRef.current
+    const abort = new AbortController()
+    abortRef.current = abort
     setPhase('streaming')
     setStageText(STAGE_TEXT.env)
     try {
       let lastPrediction: KitPrediction | null = null
-      for await (const chunk of api.kitPredictStream(symbol)) {
+      for await (const chunk of api.kitPredictStream(symbol, abort.signal)) {
         if (runIdRef.current !== myRun) return // 已切股, 丢弃本轮
         switch (chunk.type) {
           case 'stage':
@@ -76,10 +81,16 @@ export function useKitPrediction(
         setStageText('')
         toast('KiT 预测未返回结果', 'error')
       }
-    } catch {
-      // HTTP 校验错误(api 内已 toast)或网络错误
+    } catch (e) {
+      // 切股触发的中止是正常路径, 恢复 idle; 其余(HTTP 校验错误 api 内已 toast/网络错误)标失败
+      if (runIdRef.current !== myRun || (e instanceof DOMException && e.name === 'AbortError')) {
+        if (runIdRef.current === myRun) setPhase('idle')
+        return
+      }
       setPhase('error')
       setStageText('')
+    } finally {
+      if (abortRef.current === abort) abortRef.current = null
     }
   }
 

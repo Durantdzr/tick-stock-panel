@@ -319,3 +319,34 @@ def test_runner_path_exists():
     p = kp._runner_path()
     assert p.is_file(), f"runner 不存在: {p}"
     assert p.name == "kit_predict_runner.py"
+
+
+async def test_predict_stream_stdout_error_preferred(monkeypatch):
+    """runner stdout 携带 {"ok": false} 结构化错误时, message 必须透出 stdout 详情而非 stderr 尾巴。"""
+    _patch_subprocess(monkeypatch, FIXTURES / "kit_stub_runner_stdout_err.py")
+    events = await _collect(kp.predict_stream(_stub_repo(), Path("/tmp"), "SYM", timeout_s=30))
+    assert events[-1]["type"] == "error"
+    assert events[-1]["code"] == "inference_failed"
+    assert "XYZ" in events[-1]["message"]
+
+
+async def test_predict_stream_timeout_kills_process(monkeypatch, tmp_path):
+    """超时后 runner 进程必须被 kill (计划要求的 proc 终止断言)。"""
+    import os
+    import signal
+
+    pid_file = tmp_path / "stub_pid"
+    slow_stub = tmp_path / "kit_slow_with_pid.py"
+    slow_stub.write_text(
+        "import sys, time, os\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "sys.stdin.read()\n"
+        "time.sleep(30)\n"
+    )
+    _patch_subprocess(monkeypatch, slow_stub)
+    events = await _collect(kp.predict_stream(_stub_repo(), tmp_path, "SYM", timeout_s=0.5))
+    assert events[-1]["type"] == "error"
+    assert events[-1]["code"] == "timeout"
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # 进程已被 kill

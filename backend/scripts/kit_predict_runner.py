@@ -75,11 +75,11 @@ def main() -> None:
     try:
         kit_root = payload["kit_root"]
         sys.path.insert(0, kit_root)
+        import torch
         from kit_v1.infer.loader import load_model_and_config
         from kit_v1.infer.postprocess import denormalize_paths, paths_to_ohlcv
         from kit_v1.infer.sampler import flow_sample
         from kit_v1.infer.window import prepare_inference_window
-        import torch
     except Exception as e:  # noqa: BLE001 — 环境错误统一 fail-closed
         _fail("env_error", f"KiT 环境不可用 (kit_root={kit_root}): {e}")
 
@@ -109,7 +109,7 @@ def main() -> None:
             inst_id, sector_id, matched = _lookup_instrument(ckpt_dir, symbol)
         model.eval()
 
-        Lc, Lh = cfg.data.window_for(timescale)
+        Lc, Lh = cfg.data.window_for(timescale)  # noqa: N806 — 与 KiT 上游命名一致
         half_life_days = float(cfg.data.vol_ema_half_life_days)
 
         df = pd.DataFrame(payload["bars"])

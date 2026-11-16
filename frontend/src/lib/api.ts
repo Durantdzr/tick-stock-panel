@@ -4687,11 +4687,12 @@ export const api = {
    * stage 事件用于进度展示; done 带 prediction(20 根中位路径 + close 分位带 + 摘要);
    * 错误分两类: HTTP 4xx/5xx(校验, detail 在 body)与 NDJSON error 事件(推理期)。
    */
-  async *kitPredictStream(symbol: string): AsyncGenerator<KitPredictChunk> {
+  async *kitPredictStream(symbol: string, signal?: AbortSignal): AsyncGenerator<KitPredictChunk> {
     const res = await fetch('/api/kit/predict', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol }),
+      signal,
     })
     if (!res.ok) {
       let detail = ''
