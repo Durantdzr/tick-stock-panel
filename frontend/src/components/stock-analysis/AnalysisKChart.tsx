@@ -2,7 +2,7 @@ import { useEffect, useRef, useMemo, useState } from 'react'
 import { chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
-import type { KlineRow, LevelSeries } from '@/lib/api'
+import type { KlineRow, KitPredictionBar, LevelSeries } from '@/lib/api'
 
 /**
  * 个股分析专用日 K 图表。
@@ -90,6 +90,10 @@ export interface ChartRange {
   color?: string
 }
 
+export interface KitForecastOverlay {
+  bars: KitPredictionBar[]
+}
+
 interface Props {
   rows: KlineRow[]
   levels?: Record<LevelType, PriceLevel[]>
@@ -97,6 +101,8 @@ interface Props {
   series?: LevelSeries
   /** series 数据对应的日期数组(与 series 各数组对齐) */
   seriesDates?: string[]
+  /** KiT 预测叠加: 中位路径蜡烛(紫) + close p10/p90 分位带(浅紫半透明) */
+  forecast?: KitForecastOverlay
   /** 默认开启的价位组 */
   defaultLevelTypes?: LevelType[]
   /** 预留:新闻/暴雷/利好日期标记 */
@@ -116,6 +122,7 @@ export function AnalysisKChart({
   levels,
   series,
   seriesDates,
+  forecast,
   defaultLevelTypes = ['sr', 'pivot', 'keltner_s'],
   markers,
   ranges,
@@ -136,13 +143,23 @@ export function AnalysisKChart({
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
 
   // 数据预处理 + 带状曲线序列对齐(后端 series 的日期范围可能与 rows 不同,需映射)
-  const { dates, candle, vols, dateIndex, zoomStart, alignedSeries } = useMemo(() => {
+  // + KiT 预测段: 日期追加到类目轴尾部,蜡烛/分位带只在追加区有值
+  const { dates, candle, vols, dateIndex, zoomStart, alignedSeries, forecastBars } = useMemo(() => {
     const dates = rows.map(r => (typeof r.date === 'string' ? r.date.slice(0, 10) : String(r.date)))
     const candle = rows.map(r => [r.open, r.close, r.low, r.high])
     const vols = rows.map(r => ({
       value: r.volume ?? 0,
       itemStyle: { color: r.close >= r.open ? THEME.volUp : THEME.volDown },
     }))
+    // 预测 bar: 首根与历史最后一天重复时丢弃; candlestick 数据格式 [open, close, low, high]
+    const fBars: KitPredictionBar[] = (forecast?.bars ?? []).filter(
+      b => dates.length === 0 || b.date !== dates[dates.length - 1],
+    )
+    for (const b of fBars) {
+      dates.push(b.date)
+      candle.push([b.open, b.close, b.low, b.high])
+      vols.push({ value: 0, itemStyle: { color: 'rgba(139,92,246,0.25)' } })
+    }
     const dateIndex = new Map(dates.map((d, i) => [d, i]))
     // 默认显示最近 6 个月 ≈ 120 个交易日;数据不足则全部显示
     const showBars = 120
@@ -184,8 +201,8 @@ export function AnalysisKChart({
       }
     }
 
-    return { dates, candle, vols, dateIndex, zoomStart, alignedSeries }
-  }, [rows, series, seriesDates])
+    return { dates, candle, vols, dateIndex, zoomStart, alignedSeries, forecastBars: fBars }
+  }, [rows, series, seriesDates, forecast])
 
   // 构建 option
   const buildOption = (): EChartsOption => {
@@ -309,6 +326,40 @@ export function AnalysisKChart({
       })
     }
 
+    // KiT 预测叠加: 中位路径蜡烛(紫) + close p10/p90 分位带(stack 面积带, 浅紫半透明)
+    // 历史区用 '-' 占位, 预测区才有值; 预测 series 不参与价位 hover 联动(keyMap 不含)
+    if (forecastBars.length > 0) {
+      const nHist = dates.length - forecastBars.length
+      const pad = (): (number | '-')[] => dates.map((_, i) => (i < nHist ? '-' : null as unknown as number))
+      const p10 = pad(); const p90 = pad(); const band = pad()
+      forecastBars.forEach((b, i) => {
+        p10[nHist + i] = b.close_p10
+        p90[nHist + i] = b.close_p90
+        band[nHist + i] = b.close_p90 - b.close_p10
+      })
+      series.push(
+        { // 带下轨: 线与面积都不可见, 仅作 stack 基线
+          name: '预测下轨', type: 'line', data: p10, stack: 'kit-band',
+          symbol: 'none', silent: true, animation: false, z: 1,
+          lineStyle: { opacity: 0 }, areaStyle: { opacity: 0 },
+        },
+        { // 带区域: p90-p10 堆叠面积
+          name: '预测区间', type: 'line', data: band, stack: 'kit-band',
+          symbol: 'none', silent: true, animation: false, z: 1,
+          lineStyle: { opacity: 0 }, areaStyle: { color: 'rgba(139,92,246,0.14)' },
+        },
+        { // 中位路径蜡烛(紫): 与红涨绿跌的历史蜡烛区分
+          name: 'KiT预测', type: 'candlestick', data: dates.map((_, i) =>
+            i < nHist ? '-' : (forecastBars[i - nHist] ? [forecastBars[i - nHist].open, forecastBars[i - nHist].close, forecastBars[i - nHist].low, forecastBars[i - nHist].high] : '-')),
+          animation: false, z: 2,
+          itemStyle: {
+            color: 'rgba(139,92,246,0.95)', color0: 'rgba(139,92,246,0.45)',
+            borderColor: '#8B5CF6', borderColor0: '#8B5CF6',
+          },
+        },
+      )
+    }
+
     // 填充 seriesIndex → levelKey 映射(K/成交量索引 0/1 不参与联动)
     const keyMap = new Map<number, string>()
     // series[0]=K线, series[1]=成交量, 之后是按 priceLines + CURVE_DEFS 顺序 push 的
@@ -391,7 +442,7 @@ export function AnalysisKChart({
     }
     chartInstRef.current.setOption(buildOption(), true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, levels, series, seriesDates, activeTypes, pivotRank, markers, ranges, height, theme, hoveredKey])
+  }, [rows, levels, series, seriesDates, forecast, activeTypes, pivotRank, markers, ranges, height, theme, hoveredKey])
 
   // resize
   useEffect(() => {
