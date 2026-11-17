@@ -33,6 +33,8 @@ runtime: none                            # 运行时类型: node | python | none
 entry: app.plugins.my_source.provider:MyProvider   # provider 类的导入路径
 check: app.plugins.my_source.bridge:availability   # 可用性检测函数(可选)
 datasets: [realtime]                     # 支持: daily/adj_factor/minute/realtime/depth5/financial
+                                         # 插件源 daily 恒为 raw 口径 (未复权, 由 adj_factor 本地前复权);
+                                         # 已复权价源请用自定义 HTTP 源的 price_basis: adjusted 声明 (见 custom-data-source.md)
 api_key_env: MY_SOURCE_API_KEY           # (可选)声明后设置页提供 Key 输入框
 hidden: false                            # (可选)true = 已加载但对设置页隐藏,不注册不展示
 description: "数据源描述"

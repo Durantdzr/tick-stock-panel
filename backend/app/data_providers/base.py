@@ -29,6 +29,10 @@ class ProviderCapabilities:
     realtime: bool = False
     depth5: bool = False
     financial: bool = False
+    # daily 数据集交付的价格口径: "raw"(未复权, 本仓库默认模型, enriched 再乘
+    # adj_factor) 或 "adjusted"(源已复权, 不得再声明/路由 adj_factor, 否则
+    # enriched 双重复权)。口径声明必须在数据边界, 禁止下游启发式猜测。
+    daily_price_basis: Literal["raw", "adjusted"] = "raw"
 
 
 class MarketDataProvider(Protocol):

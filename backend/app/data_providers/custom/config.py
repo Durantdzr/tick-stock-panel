@@ -40,6 +40,9 @@ class DatasetConfig:
     # realtime 比例字段(change_pct/amplitude/turnover_rate)的单位声明:
     # "percent"(返回 3.66 表示 3.66%)或 "decimal"(返回 0.0366 表示 3.66%)。
     pct_unit: str | None = None
+    # daily 数据集价格口径声明: "raw"(默认, 未复权)或 "adjusted"(源已复权)。
+    # adjusted 与 adj_factor 数据集互斥 —— 再乘调整因子会双重复权。
+    price_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,12 @@ def _dataset_from_dict(raw: dict[str, Any]) -> DatasetConfig:
     if pct_unit not in (None, "percent", "decimal"):
         raise ValueError(f"pct_unit must be 'percent' or 'decimal', got {pct_unit!r}")
 
+    price_basis = str(raw.get("price_basis") or "").strip().lower() or None
+    if price_basis not in (None, "raw", "adjusted"):
+        raise ValueError(
+            f"price_basis must be 'raw' or 'adjusted', got {price_basis!r}"
+        )
+
     return DatasetConfig(
         url=str(raw.get("url", "") or ""),
         method=str(raw.get("method", "GET") or "GET").upper(),
@@ -99,6 +108,7 @@ def _dataset_from_dict(raw: dict[str, Any]) -> DatasetConfig:
         asset_type_param=(str(raw.get("asset_type_param") or "").strip() or None),
         freq_param=(str(raw.get("freq_param") or "").strip() or None),
         pct_unit=pct_unit,
+        price_basis=price_basis,
     )
 
 
@@ -108,6 +118,13 @@ def config_from_dict(raw: dict[str, Any], path: Path | None = None) -> CustomSou
         for name, cfg in (raw.get("datasets") or {}).items()
         if name in {"daily", "adj_factor", "realtime", "minute", "depth5", "full_minute", "financial"} and isinstance(cfg, dict)
     }
+    daily_basis = getattr(datasets.get("daily"), "price_basis", None)
+    if daily_basis == "adjusted" and "adj_factor" in datasets:
+        raise ValueError(
+            "daily: price_basis=adjusted 与 adj_factor 数据集互斥 —— "
+            "源已交付复权价, enriched 再乘调整因子会双重复权; "
+            "请去掉 adj_factor 数据集或改为 price_basis=raw"
+        )
     default_name = path.stem if path else "preview"
     name = str(raw.get("name", default_name) or default_name).lower()
     return CustomSourceConfig(

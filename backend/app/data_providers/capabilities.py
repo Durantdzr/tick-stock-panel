@@ -133,6 +133,7 @@ def _declared_sources() -> list[dict]:
             "display": source.get("display_name") or source["name"],
             "datasets": set(source.get("datasets") or []),
             "asset_types": set(source.get("asset_types") or []),
+            "price_basis": source.get("price_basis"),
             # 自定义源注册即已通过加载校验, 视为可用
             "available": True,
             "status": "ok",
@@ -187,7 +188,15 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
                 "available": s["available"],
                 "status": s["status"],
                 "note": None if s["available"] else (s["status"] or "不可用"),
+                # 价格口径声明: adjusted 源已交付复权价, 与 adj_factor 路由组合会双重复权
+                "price_basis": s.get("price_basis"),
             }
+            if (
+                cap["id"] == "daily"
+                and s.get("price_basis") == "adjusted"
+                and "adj_factor" in s.get("datasets", set())
+            ):
+                entry["note"] = "源声明已复权价: 勿把 adj_factor 路由到该源, 否则双重复权"
             (candidates if s["available"] else pending).append(entry)
         usable = any(c["name"] == effective for c in candidates)
         capabilities.append({

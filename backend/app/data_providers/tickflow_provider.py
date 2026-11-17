@@ -26,6 +26,7 @@ class TickFlowProvider:
         instruments=True,
         daily=True,
         adj_factor=True,
+        daily_price_basis="raw",
         minute=True,
         realtime=True,
         depth5=True,

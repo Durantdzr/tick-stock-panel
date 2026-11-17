@@ -128,6 +128,11 @@ class GenericHTTPProvider:
                     errors.append(f"{dataset}: pct_unit 仅用于 realtime 数据集")
                 elif cfg.pct_unit not in ("percent", "decimal"):
                     errors.append(f"{dataset}: pct_unit 必须是 percent 或 decimal")
+            if cfg.price_basis is not None:
+                if dataset != "daily":
+                    errors.append(f"{dataset}: price_basis 仅用于 daily 数据集")
+                elif cfg.price_basis not in ("raw", "adjusted"):
+                    errors.append(f"{dataset}: price_basis 必须是 raw 或 adjusted")
             # depth5/financial 逐批只注入代码参数, 起止时间不参与请求, 不纳入重名检查
             if dataset not in {"realtime", "depth5", "financial"}:
                 request_params = [cfg.symbols_param, cfg.start_param, cfg.end_param]
@@ -143,6 +148,13 @@ class GenericHTTPProvider:
                         f"{dataset}: duplicate request parameter names: "
                         f"{', '.join(duplicates)}"
                     )
+        daily = self.config.datasets.get("daily")
+        if daily is not None and getattr(daily, "price_basis", None) == "adjusted" \
+                and "adj_factor" in self.config.datasets:
+            errors.append(
+                "daily: price_basis=adjusted 与 adj_factor 数据集互斥 —— "
+                "源已交付复权价, enriched 再乘调整因子会双重复权"
+            )
         return errors
 
     def _request_rows_retry(
