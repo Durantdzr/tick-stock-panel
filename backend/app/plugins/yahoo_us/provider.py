@@ -134,3 +134,139 @@ def parse_chart(
         same_day = split_by_date.get(d, 1.0)
         dividend_events.append((d, amount * _later(d) * same_day))
     return rows, split_events, dividend_events
+
+
+# ================================================================ provider
+import random  # noqa: E402
+import time  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
+
+import polars as pl  # noqa: E402
+
+from app.data_providers.base import ProviderRequestError  # noqa: E402
+from app.data_providers.normalizer import normalize_daily  # noqa: E402
+
+from .client import YahooClient, YahooError  # noqa: E402
+
+_DATASETS = ("daily", "adj_factor")
+_DAILY_INTERVAL_S = 0.3  # 标的间节流基线 (雅虎 ~2000 请求/小时/IP)
+_SYMBOL_JITTER_S = 0.15
+
+
+@dataclass
+class _YahooUSConfig:
+    """轻量 config shim, 让 custom loader 的 provider_has_dataset 能识别本 provider。"""
+
+    name: str = "yahoo_us"
+    display_name: str = "雅虎财经·美股"
+    datasets: dict = field(default_factory=lambda: dict.fromkeys(_DATASETS))
+    path: None = None
+    builtin: bool = True
+
+
+def _require_us(asset_type: str) -> None:
+    if asset_type != "us":
+        raise ProviderRequestError(
+            f"雅虎美股数据源仅提供美股(us)数据, 收到 asset_type={asset_type!r}"
+        )
+
+
+class YahooUSProvider:
+    """雅虎美股数据源 (us 专用市场源)。
+
+    维表边界: 雅虎无全市场目录端点, get_instruments 显式拒绝 (ProviderRequestError),
+    instruments_us 维表由 eastmoney_us 承载 — us_sync 负责回退编排。
+    """
+
+    name = "yahoo_us"
+    builtin = True
+
+    def __init__(self, client: YahooClient | None = None) -> None:
+        self.config = _YahooUSConfig()
+        self._client = client if client is not None else YahooClient()
+        self._symbol_memo: dict[str, str] = {}
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _to_yahoo_symbol(self, symbol: str) -> str:
+        """内部 ticker → 雅虎格式 ('.'/'_' → '-', 大写, 如 BRK.B → BRK-B)。
+
+        旧 ticker 陷阱: 雅虎历史代码可能现属其他公司 (FB/BBT 类), 映射后拉空
+        会以失败上浮 (见 get_daily 的 fail-closed 收集), 不猜不换。
+        """
+        key = symbol.strip().upper()
+        ys = self._symbol_memo.get(key)
+        if ys is None:
+            ys = key.replace(".", "-").replace("_", "-")
+            self._symbol_memo[key] = ys
+        return ys
+
+    def get_daily(
+        self,
+        symbols: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+        asset_type: str = "us",
+        on_chunk_done=None,
+    ) -> pl.DataFrame:
+        """美股日K → 内部契约。原始价 (反向还原), volume 股, date=美东交易日。
+
+        start_time=None → period1=0 全量历史 (雅虎全史与 1 年同为一次请求);
+        end_time 恒用真实 now (period2=now 不变量: 事件日之后的全部调整拆股
+        必在载荷 events 内, parse_chart 才能自洽还原)。任一标的失败 → 整体
+        ProviderRequestError (fail-closed), 不返回部分数据。
+        """
+        _require_us(asset_type)
+        if not symbols:
+            return pl.DataFrame()
+        period2 = int(datetime.now().timestamp())
+        period1 = int(start_time.timestamp()) if start_time is not None else 0
+        frames: list[pl.DataFrame] = []
+        failed: list[str] = []
+        for i, symbol in enumerate(symbols):
+            if i:
+                time.sleep(_DAILY_INTERVAL_S + random.uniform(0, _SYMBOL_JITTER_S))
+            try:
+                payload = self._client.chart(self._to_yahoo_symbol(symbol), period1, period2)
+                rows, _splits, _dividends = parse_chart(payload, symbol)
+            except YahooError as e:
+                failed.append(f"{symbol}: {e}")
+                continue
+            df = normalize_daily(rows, source=self.name)
+            if not df.is_empty():
+                frames.append(df.with_columns(pl.lit(self.name).alias("source")))
+            if on_chunk_done:
+                on_chunk_done(i + 1, len(symbols))
+        if failed:
+            raise ProviderRequestError(f"雅虎美股日K拉取失败: {'; '.join(failed)}")
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+    def get_instruments(self, asset_type: str = "us") -> pl.DataFrame:
+        """维表不支持: 雅虎无全市场目录端点 (显式拒绝, 不返空伪装)。"""
+        _require_us(asset_type)
+        raise ProviderRequestError(
+            "雅虎无全市场目录端点: 美股维表由 eastmoney_us 承载, 本源不提供 get_instruments"
+        )
+
+
+def availability() -> tuple[bool, str]:
+    """loader 启动自检: 探测 AAPL 近端 chart 连通性。不抛异常。
+
+    429/401/999 证明接口可达 (限频上下文), 注册放行 — 同步轮次自带退避,
+    共享代理出口持续 429 时不会让插件永久不可用; 404/403/网络异常按不可达处理。
+    """
+    try:
+        probe = YahooUSProvider()
+        now_s = int(datetime.now().timestamp())
+        payload = probe._client.chart("AAPL", now_s - 10 * 86400, now_s)
+        rows, _splits, _dividends = parse_chart(payload, "AAPL")
+    except YahooError as e:
+        if e.status_code in (429, 401, 999):
+            return True, f"接口可达但限频 (HTTP {e.status_code}), 同步轮次按退避重试"
+        return False, f"公开接口不可达: {e}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"公开接口不可达: {e}"
+    if not rows:
+        return False, "接口返回空数据, 结构可能已变化"
+    return True, "ok"

@@ -31,7 +31,15 @@ USER_AGENT = (
 
 
 class YahooError(Exception):
-    """雅虎接口错误 (网络失败 / HTTP 非 200 / 响应结构不符 / 重试穷尽)。"""
+    """雅虎接口错误 (网络失败 / HTTP 非 200 / 响应结构不符 / 重试穷尽)。
+
+    status_code: HTTP 状态码 (可缺省; 网络异常/结构异常时为 None),
+    供 availability 区分「可达但限频」与「不可达」。
+    """
+
+    def __init__(self, msg: str, status_code: int | None = None) -> None:
+        super().__init__(msg)
+        self.status_code = status_code
 
 
 class YahooClient:
@@ -82,10 +90,13 @@ class YahooClient:
                 if attempt < 2:
                     time.sleep(_THROTTLE_BACKOFF_S[attempt])
                 continue
-            raise YahooError(f"HTTP {resp.status_code} ({symbol} chart)")
+            raise YahooError(f"HTTP {resp.status_code} ({symbol} chart)", status_code=resp.status_code)
         if resp is None or resp.status_code != 200:
             detail = f"HTTP {resp.status_code}" if resp is not None else f"网络请求失败: {net_err}"
-            raise YahooError(f"雅虎接口重试穷尽 (3 次): {symbol} {detail}") from net_err
+            raise YahooError(
+                f"雅虎接口重试穷尽 (3 次): {symbol} {detail}",
+                status_code=resp.status_code if resp is not None else None,
+            ) from net_err
         try:
             payload = resp.json()
         except ValueError as e:

@@ -12,8 +12,10 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import polars as pl
 import pytest
 
+from app.plugins.yahoo_us.client import YahooError
 from app.plugins.yahoo_us.provider import parse_chart
 
 FIXTURES = Path(__file__).parent / "fixtures" / "yahoo"
@@ -89,3 +91,158 @@ def test_parse_drops_unfinished_intraday_bar() -> None:
     rows_pm, _, _ = parse_chart(payload, "AAPL", now_et=datetime(2026, 11, 18, 16, 5, tzinfo=NY))
     assert any(r["date"] == now_am.date() and r["close"] == pytest.approx(111.0)
                for r in rows_pm), "收盘后当日 bar 保留"
+
+
+# ---------------------------------------------------------------- provider
+class _FakeYahooClient:
+    """按 symbol 返回预置 payload / 抛错; 记录 chart 调用供断言。"""
+
+    def __init__(self, payloads: dict[str, dict] | None = None, fail: set[str] | None = None):
+        self.payloads = payloads or {}
+        self.fail = fail or set()
+        self.charts: list[tuple[str, int, int]] = []
+
+    def chart(self, symbol: str, period1: int, period2: int) -> dict:
+        self.charts.append((symbol, period1, period2))
+        if symbol in self.fail:
+            raise YahooError(f"HTTP 404 ({symbol} chart)", status_code=404)
+        return self.payloads[symbol]
+
+    def close(self) -> None:
+        pass
+
+
+def _provider_with_split(monkeypatch=None) -> tuple[object, _FakeYahooClient]:
+    from app.plugins.yahoo_us.provider import YahooUSProvider
+
+    fake = _FakeYahooClient(payloads={"AAPL": _load("chart_aapl_split_window.json")})
+    return YahooUSProvider(client=fake), fake
+
+
+def test_get_daily_symbol_mapping() -> None:
+    from app.plugins.yahoo_us.provider import YahooUSProvider
+
+    fake = _FakeYahooClient(payloads={"BRK-B": _load("chart_aapl_split_window.json")})
+    provider = YahooUSProvider(client=fake)
+    provider.get_daily(["BRK.B", "brk_b"], datetime(2020, 8, 20), None, asset_type="us")
+    requested = [c[0] for c in fake.charts]
+    assert requested == ["BRK-B", "BRK-B"], "内部 ticker 必须映射为雅虎格式 ('.'/'_'→'-', 大写)"
+
+
+def test_get_daily_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    provider, fake = _provider_with_split()
+    start = datetime(2020, 8, 20)
+    df = provider.get_daily(["AAPL"], start, None, asset_type="us")
+
+    from app.data_providers.normalizer import DAILY_COLS
+
+    assert set(df.columns) <= set(DAILY_COLS) | {"source"}
+    assert df.schema["date"] == pl.Date
+    assert df["source"].unique().to_list() == ["yahoo_us"]
+    assert "amount" not in df.columns, "雅虎无成交额字段, 缺失即缺失, 不伪造"
+    row28 = df.filter(pl.col("date") == date(2020, 8, 28))
+    assert row28["close"][0] == pytest.approx(124.8075 * 4, abs=1e-4), "close 须为反向还原后的原始价"
+    # 窗口语义: start → period1 原样; end=None → period2 = now (全史则 period1=0)
+    symbol_ys, period1, period2 = fake.charts[-1]
+    assert symbol_ys == "AAPL" and period1 == int(start.timestamp())
+    assert period2 > int(datetime.now().timestamp()) - 60
+    provider.get_daily(["AAPL"], None, None, asset_type="us")
+    assert fake.charts[-1][1] == 0, "start=None 表示全量历史 (period1=0)"
+
+
+def test_get_daily_throttles_between_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", sleeps.append)
+    payload = _load("chart_aapl_split_window.json")
+    from app.plugins.yahoo_us.provider import YahooUSProvider
+
+    fake = _FakeYahooClient(payloads={"AAPL": payload, "MSFT": payload})
+    provider = YahooUSProvider(client=fake)
+    provider.get_daily(["AAPL", "MSFT"], datetime(2020, 8, 20), None, asset_type="us")
+    assert len(sleeps) >= 1, "标的之间必须节流"
+
+
+def test_get_daily_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    from app.data_providers.base import ProviderRequestError
+    from app.plugins.yahoo_us.provider import YahooUSProvider
+
+    fake = _FakeYahooClient(
+        payloads={"AAPL": _load("chart_aapl_split_window.json")}, fail={"MSFT"})
+    provider = YahooUSProvider(client=fake)
+    with pytest.raises(ProviderRequestError) as excinfo:
+        provider.get_daily(["AAPL", "MSFT"], datetime(2020, 8, 20), None, asset_type="us")
+    assert "MSFT" in str(excinfo.value)
+
+
+def test_require_us_guard() -> None:
+    from app.data_providers.base import ProviderRequestError
+
+    provider, _ = _provider_with_split()
+    with pytest.raises(ProviderRequestError):
+        provider.get_daily(["AAPL"], None, None, asset_type="stock")
+    with pytest.raises(ProviderRequestError):
+        provider.get_instruments("stock")
+
+
+def test_get_instruments_explicitly_unsupported() -> None:
+    from app.data_providers.base import ProviderRequestError
+
+    provider, _ = _provider_with_split()
+    with pytest.raises(ProviderRequestError, match="维表"):
+        provider.get_instruments("us")
+
+
+def test_plugin_manifest_declares_us_market() -> None:
+    from app.data_providers import custom as custom_sources
+
+    manifest = custom_sources.plugin_manifest("yahoo_us")
+    assert manifest is not None
+    assert manifest["name"] == "yahoo_us"
+    assert manifest["asset_types"] == ["us"]
+    assert set(manifest["datasets"]) == {"daily", "adj_factor"}
+    assert manifest["runtime"] == "none"
+    assert manifest["entry"] == "app.plugins.yahoo_us.provider:YahooUSProvider"
+    assert manifest["check"] == "app.plugins.yahoo_us.provider:availability"
+
+
+def test_us_market_source_excluded_from_ashare_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.data_providers import capabilities
+    from app.data_providers import custom as custom_sources
+
+    plugins = [{
+        "name": "yahoo_us", "display": "雅虎财经·美股",
+        "datasets": {"daily", "adj_factor"}, "asset_types": {"us"},
+        "available": True, "status": "ok", "kind": "plugin",
+    }]
+    monkeypatch.setattr(custom_sources, "list_plugins", lambda: plugins)
+    monkeypatch.setattr(custom_sources, "list_sources", lambda: [])
+    matrix = capabilities.build_capability_matrix({}, "expert")
+    for cap in matrix["capabilities"]:
+        names = [c["name"] for c in cap["candidates"]]
+        assert "yahoo_us" not in names, f"市场专用源不得进入 A 股能力候选: {cap['id']}"
+
+
+def test_availability_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.plugins.yahoo_us import provider as yprovider
+
+    ok = _FakeYahooClient(payloads={"AAPL": _load("chart_aapl_split_window.json")})
+    monkeypatch.setattr(yprovider, "YahooClient", lambda: ok)
+    assert yprovider.availability() == (True, "ok")
+
+    throttled = _FakeYahooClient(fail=set())
+    def _throttle(symbol, p1, p2):
+        raise YahooError("HTTP 429 (AAPL chart)", status_code=429)
+    throttled.chart = _throttle
+    monkeypatch.setattr(yprovider, "YahooClient", lambda: throttled)
+    available, reason = yprovider.availability()
+    assert available and "限频" in reason, "429 证明接口可达: 注册放行, 限频由同步轮次退避"
+
+    dead = _FakeYahooClient(fail=set())
+    def _dead(symbol, p1, p2):
+        raise YahooError("HTTP 404 (AAPL chart)", status_code=404)
+    dead.chart = _dead
+    monkeypatch.setattr(yprovider, "YahooClient", lambda: dead)
+    available, reason = yprovider.availability()
+    assert not available and reason
