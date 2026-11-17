@@ -158,3 +158,5 @@ def test_evidence_validation_absent_is_none(tmp_path):
     result = SimpleNamespace(run_id="abc1234567", stats={}, trades=[])
     manifest = _recorder(tmp_path).finish(result, {"end": "2024-02-01"})
     assert manifest["validation"] is None
+
+

@@ -29,6 +29,8 @@ GATE_MIN_POSITIVE_FOLD_RATIO = 2.0 / 3.0
 GATE_MIN_OOS_SHARPE = 0.5
 GATE_MAX_DRAWDOWN = -0.25
 GATE_MIN_TRADES = 60
+# OOS 日收益 Bootstrap Sharpe 置信下界: 不显著大于 0 的组合即使点估计过线也不发布
+GATE_MIN_SHARPE_CI_LOW = 0.0
 
 MiningProfile = Literal["exploratory", "balanced", "strict"]
 
@@ -204,12 +206,16 @@ def evaluate_candidate_gate(
     max_drawdown: float | None,
     n_trades: int | None,
     worst_fold_sharpe: float | None = None,
+    sharpe_ci_low: float | None = None,
 ) -> CandidateGateResult:
     """Check the documented promotion thresholds against real candidate evidence.
 
     worst_fold_sharpe 是 mining-v3 起的稳健维度: strict 档 (confidence=high) 要求
     最差外层折 Sharpe > 0, 防"均值好看、某段崩溃"的组合登顶。None 表示 v2 历史
     工件无此列 — 历史候选按其产出时的口径放行, 不追溯执行新门槛。
+    sharpe_ci_low 是 OOS 日收益 Bootstrap Sharpe 的 95% 置信下界 (mining-v4):
+    点估计过线但置信下界不大于 0 的组合 (常见于赢家扎堆/自相关收益) 不发布。
+    None 同样按历史工件放行。
     """
     reasons: list[str] = []
     if confidence == "low":
@@ -241,6 +247,11 @@ def evaluate_candidate_gate(
         )
     if n_trades is None or n_trades < GATE_MIN_TRADES:
         reasons.append(f"requires at least {GATE_MIN_TRADES} OOS trades")
+    if sharpe_ci_low is not None and sharpe_ci_low <= GATE_MIN_SHARPE_CI_LOW:
+        reasons.append(
+            "requires an OOS bootstrap Sharpe CI lower bound above "
+            f"{GATE_MIN_SHARPE_CI_LOW} (got {sharpe_ci_low:.3f})"
+        )
     return CandidateGateResult(qualified=not reasons, reasons=tuple(reasons))
 
 

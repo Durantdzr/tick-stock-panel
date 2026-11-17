@@ -789,6 +789,7 @@ def _project_candidates(
             sharpe=row.get("oos_sharpe"),
             max_drawdown=row.get("oos_max_drawdown"),
             n_trades=row.get("oos_n_trades"),
+            sharpe_ci_low=row.get("oos_sharpe_ci_low"),
         )
         candidate["gate"] = {
             "qualified": gate.qualified,
