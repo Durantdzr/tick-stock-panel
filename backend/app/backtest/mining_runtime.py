@@ -1170,12 +1170,7 @@ def _build_artifacts(
                 n_dates=n_dates,
                 reason=None,
             ))
-    folds = pl.DataFrame(fold_rows, schema_overrides={
-        "total_return": pl.Float64,
-        "sharpe": pl.Float64,
-        "max_drawdown": pl.Float64,
-        "n_trades": pl.Int64,
-    })
+    folds = pl.DataFrame(fold_rows, schema_overrides=_FOLDS_SCHEMA_OVERRIDES)
 
     candidate_rows = []
     overall_rows = [row for row in fold_rows if row["regime_state"] == "overall"]
@@ -1361,6 +1356,17 @@ def _sharpe_ci_low(oos_daily: list[float]) -> float | None:
     equity = list(np.cumprod(1.0 + np.asarray(oos_daily, dtype=np.float64)))
     result = bootstrap_sharpe_ci(equity)
     return result["ci_low"] if result["status"] == "ok" else None
+
+
+# daily_returns 必须显式声明 List(Float64): 混合 None/list 行依赖推断时,
+# 超过 infer_schema_length=100 且前段全 None (大面积 skip) 会推断成 Null 抛 SchemaError。
+_FOLDS_SCHEMA_OVERRIDES = {
+    "total_return": pl.Float64,
+    "sharpe": pl.Float64,
+    "max_drawdown": pl.Float64,
+    "n_trades": pl.Int64,
+    "daily_returns": pl.List(pl.Float64),
+}
 
 
 def _daily_returns_of(equity_curve: list[dict]) -> list[float] | None:
