@@ -13,6 +13,7 @@ import {
   Eye,
   EyeOff,
   FileWarning,
+  Globe2,
   KeyRound,
   Landmark,
   ListChecks,
@@ -599,6 +600,72 @@ function CapabilityChips({ caps, servingSet, isTickFlow, paid = false }: {
   )
 }
 
+/** 美股数据源路由 (市场专用源, 独立于 A 股能力矩阵):
+ * 动态枚举 asset_types∋us 且 datasets∋daily 的插件 (eastmoney_us / yahoo_us);
+ * 切换即写 us_data_provider 偏好。后果提示: 雅虎无分钟K, 因子落盘待 enriched 应用。 */
+function UsRoutingSection() {
+  const qc = useQueryClient()
+  const prefs = usePreferences()
+  const sources = useQuery({ queryKey: QK.dataSources, queryFn: api.dataSources })
+  const [pending, setPending] = useState<string | null>(null)
+  const usSources = (sources.data?.plugins ?? []).filter(
+    p => (p.asset_types ?? []).includes('us') && p.datasets.includes('daily'),
+  )
+  const current = prefs.data?.us_data_provider || 'eastmoney_us'
+
+  const routeMut = useMutation({
+    mutationFn: (name: string) => api.updateDataProviders({ us_data_provider: name }),
+    onMutate: async (name) => {
+      setPending(name)
+      const prev = qc.getQueryData<Preferences>(QK.preferences)
+      if (prev) qc.setQueryData<Preferences>(QK.preferences, { ...prev, us_data_provider: name })
+      return { prev }
+    },
+    onError: (_e, _name, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.preferences, ctx.prev)
+      toast('美股数据源切换失败', 'error')
+    },
+    onSuccess: () => toast('美股数据源已切换', 'success'),
+    onSettled: () => {
+      setPending(null)
+      qc.invalidateQueries({ queryKey: QK.preferences })
+    },
+  })
+
+  if (!usSources.length) return null
+  return (
+    <section className="rounded-card border border-border bg-surface p-5">
+      <div className="flex items-center gap-2.5 mb-1">
+        <Globe2 className="h-4 w-4 text-secondary shrink-0" />
+        <h2 className="text-sm font-medium text-foreground">美股数据源</h2>
+        <span className="text-[10px] text-muted/60">日K / 除权因子</span>
+      </div>
+      <p className="text-[11px] text-muted mb-3">
+        美股为独立市场路由, 与 A 股能力矩阵互不影响。切至雅虎: 分钟K同步跳过
+        (雅虎不提供); 拆股/分红因子落盘 (enriched 复权应用待后续版本)。
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {usSources.map(p => {
+          const active = current === p.name
+          return (
+            <button
+              key={p.name}
+              onClick={() => routeMut.mutate(p.name)}
+              disabled={pending !== null}
+              className={tagCls(active, !p.available)}
+              title={p.status}
+            >
+              {pending === p.name && <Loader2 className="h-3 w-3 animate-spin" />}
+              {p.display_name || p.name}
+              {!p.available && <AlertTriangle className="h-3 w-3" />}
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } = {}) {
   const qc = useQueryClient()
   const prefs = usePreferences()
@@ -731,6 +798,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     <div className="space-y-5 max-w-5xl">
       {/* ===== 上区: 能力路由 (能力为主视图, 点标签切换提供方) ===== */}
       <CapabilityRoutingSection />
+
+      {/* ===== 美股市场专用路由 (独立于 A 股能力矩阵) ===== */}
+      <UsRoutingSection />
 
       {/* ===== 下区: 数据源 (源为主视图, 配置/接入) ===== */}
       <AnchorWrap highlight={highlight} anchor="data-sources">

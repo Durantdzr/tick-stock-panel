@@ -2250,6 +2250,7 @@ export interface PluginDataSourceItem {
   name: string
   display_name: string
   datasets: string[]
+  asset_types?: string[]   // 市场限定声明 (如 ['us']) — 市场专用源
   runtime: string          // node | python | none
   available: boolean       // 依赖是否已安装
   status: string           // 可用性原因 (供 UI 显示)
@@ -2495,6 +2496,7 @@ export interface Preferences {
   /** 市场自动同步 (crypto/us 分钟级档位, 5/15/30/60 分钟) */
   crypto_auto_sync?: MarketAutoSync
   us_auto_sync?: MarketAutoSync
+  us_data_provider?: string
   /** 数据页当前市场 (默认 stock) */
   data_page_market?: DashboardMarket
   minute_sync_enabled: boolean
@@ -3023,8 +3025,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, dataset, symbols, config }),
     }),
-  updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>>) =>
-    request<Pick<Preferences, ProviderField>>(
+  updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField> & { us_data_provider?: string }>) =>
+    request<Partial<Pick<Preferences, ProviderField> & { us_data_provider?: string }>>(
       '/api/settings/preferences/data-providers',
       { method: 'PUT', body: JSON.stringify(cfg) },
     ),
