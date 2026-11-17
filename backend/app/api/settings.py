@@ -551,6 +551,7 @@ class MinuteSyncPrefs(BaseModel):
 
 
 class DataProvidersIn(BaseModel):
+    us_data_provider: str | None = None
     daily_data_provider: str | None = None
     adj_factor_provider: str | None = None
     minute_data_provider: str | None = None
@@ -707,6 +708,7 @@ def get_preferences() -> dict:
         "review_schedule": preferences.get_review_schedule(),
         "crypto_auto_sync": preferences.get_market_auto_sync("crypto"),
         "us_auto_sync": preferences.get_market_auto_sync("us"),
+        "us_data_provider": preferences.get_us_data_provider(),
         "data_page_market": preferences.get_data_page_market(),
         "review_push_channels": preferences.get_review_push_channels(),
         "review_push_mode": preferences.get_review_push_mode(),
@@ -984,6 +986,7 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "depth5_data_provider": preferences.get_depth5_data_provider(),
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
+        "us_data_provider": preferences.get_us_data_provider(),
     }
 
 
