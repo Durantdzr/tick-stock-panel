@@ -8,8 +8,9 @@
   - 交易日门控用 XNYS 日历 (services/us_trading_day), 每日 16:35 美东定时任务
     在任务体内判节假日跳过;
   - 日线 date=美东交易日 (provider 层已归一), 分钟 datetime=北京墙钟;
-  - 无复权/股本/涨跌停: enriched 用空 factors/instruments 计算,
-    turnover_rate 与 consecutive_limit_* 恒缺失 (与 crypto 同口径)。
+  - 复权因子: 路由源声明 adj_factor 数据集 (如 yahoo_us) 时落 adj_factor_us/
+    (拆股/分红 → ex_factor 事件); enriched 复权应用属 Phase 2 — 本期
+    enriched 仍按空 factors 计算, 股本/涨跌停恒缺失 (turnover_rate 同口径)。
 
 单位口径: volume=股, amount=美元 (trading_rules volume_unit=share)。
 """
@@ -80,6 +81,77 @@ def _dir_cache_dir(repo):
     return repo.store.data_dir / "cache" / "eastmoney_us" / "dir_pages"
 
 
+_OVERLAP_CALENDAR_DAYS = 14      # 日线重叠连续性校验窗口 (自然日)
+_SPLIT_RATIO_TOLERANCE = 0.005   # 重叠比值偏离 1 超 0.5% 才视为拆股/调整 (防厂商分位噪声)
+
+
+def _us_daily_closes(repo, symbols: set[str] | None = None,
+                     since=None) -> dict[str, dict]:
+    """扫描美股日线分区 → {symbol: {date: close}} (连续性校验/因子 prev_close 用)。"""
+    base = _us_daily_dir(repo)
+    if not base.exists() or not any(base.glob("date=*/*.parquet")):
+        return {}
+    try:
+        lf = pl.scan_parquet(str(base / "date=*" / "*.parquet")).select("symbol", "date", "close")
+        if symbols:
+            lf = lf.filter(pl.col("symbol").is_in(sorted(symbols)))
+        if since is not None:
+            lf = lf.filter(pl.col("date") >= since)
+        df = lf.collect()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("美股日线扫描失败 (连续性校验退化为跳过): %s", e)
+        return {}
+    out: dict[str, dict] = {}
+    for sym, d, c in zip(df["symbol"].to_list(), df["date"].to_list(),
+                         df["close"].to_list(), strict=True):
+        out.setdefault(sym, {})[d] = c
+    return out
+
+
+def _check_overlap(new_df: pl.DataFrame, stored: dict) -> tuple[str, float]:
+    """重叠区收盘价连续性判定 → ("ok"|"split"|"mismatch", 代表比值)。
+
+    重叠 = 新帧中日期 ≤ 存量最大日期的公共日期。全部比值≈1 → ok;
+    比值一致 (极差≤0.1%) 且明显偏离 1 (>0.5%) → split (雅虎按"至今"回溯
+    预调整的签名, 全史重取覆盖); 其余 → mismatch (两源口径冲突/坏数据,
+    fail-closed 拒绝落盘)。
+    """
+    if not stored or new_df.is_empty():
+        return ("ok", 1.0)
+    stored_max = max(stored)
+    common = new_df.filter(pl.col("date") <= stored_max).select("date", "close")
+    ratios = []
+    for d, c in zip(common["date"].to_list(), common["close"].to_list(), strict=True):
+        sc = stored.get(d)
+        if sc:
+            ratios.append(c / sc)
+    if not ratios:
+        return ("ok", 1.0)
+    mean = sum(ratios) / len(ratios)
+    if all(abs(r - 1.0) <= 1e-6 for r in ratios):
+        return ("ok", 1.0)
+    if max(ratios) / min(ratios) <= 1.001 and abs(mean - 1.0) > _SPLIT_RATIO_TOLERANCE:
+        return ("split", mean)
+    return ("mismatch", mean)
+
+
+def _latest_factor_dates(repo) -> dict:
+    """adj_factor_us 已存的每 symbol 最新因子日期 (增量锚点)。"""
+    path = repo.store.data_dir / "adj_factor_us" / "all.parquet"
+    if not path.exists():
+        return {}
+    try:
+        df = pl.read_parquet(path)
+        if df.is_empty():
+            return {}
+        df = (df.select(pl.col("symbol"), pl.col("trade_date").max().over("symbol").alias("latest"))
+              .unique(subset=["symbol"]))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("美股因子增量锚点读取失败, 走全量: %s", e)
+        return {}
+    return dict(zip(df["symbol"].to_list(), df["latest"].to_list(), strict=True))
+
+
 _INSTRUMENTS_TTL_S = 12 * 3600.0  # 维表变化极少 (新上市/下架), 12h 内不重扫
 
 
@@ -121,6 +193,18 @@ def sync_us_instruments(repo) -> int:
     from app.data_providers.normalizer import INSTRUMENT_COLS
 
     provider = _us_provider()
+    if getattr(provider, "fetch_instruments_page", None) is None:
+        logger.warning(
+            "美股数据源 %s 不支持维表分页 (fetch_instruments_page), 回退 eastmoney_us",
+            getattr(provider, "name", provider),
+        )
+        from app.data_providers import custom as custom_sources
+
+        fallback = custom_sources.get_provider("eastmoney_us")
+        if fallback is None:
+            logger.warning("eastmoney_us 不可用, 跳过维表刷新 (保留存量)")
+            return repo.get_us_instruments().height
+        provider = fallback
     cache_dir = _dir_cache_dir(repo)
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
@@ -211,13 +295,15 @@ def sync_us_daily(repo, *, incremental: bool = True, on_progress=None) -> dict:
     for i, symbol in enumerate(symbols):
         latest = existing_max.get(symbol)
         start_time = None
+        overlap_since = None
         if latest is not None:
             try:
                 candidate = datetime.combine(latest, datetime.min.time()) + timedelta(days=1)
                 if candidate > datetime.now():
                     # 本地已持有最新美东交易日 bar: 无缺口可拉 (同 crypto 的 fapi -1023 边界)
                     continue
-                start_time = candidate
+                overlap_since = candidate - timedelta(days=_OVERLAP_CALENDAR_DAYS)
+                start_time = overlap_since
             except (TypeError, ValueError):
                 start_time = None
         try:
@@ -226,6 +312,19 @@ def sync_us_daily(repo, *, incremental: bool = True, on_progress=None) -> dict:
             logger.warning("美股日K拉取失败 %s: %s", symbol, e)
             errors.append(f"{symbol}: {e}")
             continue
+        if latest is not None and not df.is_empty():
+            stored = _us_daily_closes(repo, {symbol}, overlap_since).get(symbol, {})
+            verdict, ratio = _check_overlap(df, stored)
+            if verdict == "split":
+                logger.warning(
+                    "美股 %s 检出回溯预调整 (重叠比值≈%.4f), 以全史重取覆盖", symbol, ratio)
+                df = provider.get_daily([symbol], None, None, asset_type="us")
+            elif verdict == "mismatch":
+                errors.append(
+                    f"{symbol}: 重叠区收盘价不连续 (比值≈{ratio:.4f}, 既非 1 也非拆股比), 拒绝落盘")
+                if on_progress:
+                    on_progress(i + 1, total)
+                continue
         if not df.is_empty():
             frames.append(df)
         if on_progress:
@@ -284,7 +383,15 @@ def sync_us_minute(repo, days: int = 3, on_progress=None) -> dict:
     分区口径: 北京自然日 (kline_us_minute date=*, 美股 session 跨北京午夜,
     同一交易日分钟K分布跨两个分区 — 查询按 datetime 范围拼接, 见 docs/us-market.md)。
     """
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
     from app.services.kline_sync import _write_minute_partition
+
+    if not custom_sources.provider_has_dataset(preferences.get_us_data_provider(), "minute"):
+        name = preferences.get_us_data_provider()
+        logger.warning("美股数据源 %s 未声明 minute 数据集, 跳过分钟K同步", name)
+        return {"ok": True, "skipped": "minute_not_declared",
+                "rows": 0, "symbols": 0, "errors": []}
 
     provider = _us_provider()
     symbols = us_universe.load_universe(repo.store.data_dir)
@@ -308,6 +415,50 @@ def sync_us_minute(repo, days: int = 3, on_progress=None) -> dict:
             on_progress(i + 1, len(symbols))
     repo.invalidate_enriched_asset("us")
     return {"ok": True, "rows": written, "symbols": len(symbols), "errors": errors}
+
+
+def sync_us_adj_factors(repo, on_progress=None) -> dict:
+    """美股除权因子同步 (路由源声明 adj_factor 数据集时生效, 如 yahoo_us)。
+
+    因子落 adj_factor_us/all.parquet (拆股/分红 → ex_factor 单事件比值),
+    供回测/查询侧消费; enriched 复权应用属 Phase 2。eastmoney_us 路由时
+    未声明 → skipped (日志留痕)。增量锚点 = 已存 max(trade_date)+1d;
+    任一白名单标的无因子史则全量重取 (merge-upsert 幂等, 重放无害)。
+    """
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+
+    name = preferences.get_us_data_provider()
+    if not custom_sources.provider_has_dataset(name, "adj_factor"):
+        logger.info("美股数据源 %s 未声明 adj_factor 数据集, 跳过因子同步", name)
+        return {"ok": True, "skipped": "adj_factor_not_declared",
+                "rows": 0, "symbols": 0, "errors": []}
+    provider = _us_provider()
+    symbols = us_universe.load_universe(repo.store.data_dir)
+    if not symbols:
+        return {"ok": False, "error": "美股白名单为空"}
+    anchors = _latest_factor_dates(repo)
+    if anchors and all(s in anchors for s in symbols):
+        min_latest = min(anchors[s] for s in symbols)
+        anchor = datetime.combine(min_latest, datetime.min.time()) + timedelta(days=1)
+    else:
+        anchor = None
+    prev_closes = _us_daily_closes(repo)
+    df = provider.get_adj_factors(symbols, anchor, None, asset_type="us",
+                                  prev_closes=prev_closes)
+    if df.is_empty():
+        logger.info("美股因子无需更新 (%d 标的)", len(symbols))
+        return {"ok": True, "rows": 0, "symbols": len(symbols), "errors": []}
+    from app.services.kline_sync import _merge_adj_factor_store
+
+    added, affected = _merge_adj_factor_store(
+        repo.store.data_dir / "adj_factor_us" / "all.parquet", df)
+    logger.info("美股因子合并: +%d 行, 变化 %d 标的 (共 %d 标的)",
+                added, len(affected), len(symbols))
+    if on_progress:
+        on_progress(len(symbols), len(symbols))
+    return {"ok": True, "rows": df.height, "added": added,
+            "symbols": len(symbols), "errors": []}
 
 
 def is_us_trading_session_day() -> bool:
@@ -347,6 +498,8 @@ def run_us_sync(repo, *, with_minute: bool = False, skip_non_trading_day: bool =
         daily = sync_us_daily(repo)
         _report("daily", 50, f"日K {daily.get('rows', 0)} 行")
         _report("enriched", 80, f"指标 {daily.get('enriched_rows', 0)} 行")
+        factors = sync_us_adj_factors(repo)
+        _report("factors", 85, f"因子 {factors.get('rows', 0)} 行")
         minute = sync_us_minute(repo) if with_minute else None
         if minute is not None:
             _report("minute", 90, f"分钟K {minute.get('rows', 0)} 行")
@@ -354,6 +507,7 @@ def run_us_sync(repo, *, with_minute: bool = False, skip_non_trading_day: bool =
             "ok": True,
             "instruments": instruments,
             "daily": daily,
+            "factors": factors,
             "minute": minute,
             "elapsed_s": round(time.monotonic() - started, 1),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
