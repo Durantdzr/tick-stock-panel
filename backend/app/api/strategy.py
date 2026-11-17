@@ -723,6 +723,34 @@ def _set_meta_bool_field(code: str, field: str, value: bool) -> str:
     return "".join(lines)
 
 
+def _stamp_meta_provenance(code: str, provenance: dict) -> str:
+    """在 META 里写入模型 provenance(纯文本改写, 不执行代码): 存在则替换, 不存在则追加。
+
+    供 AI 生成策略保存时盖章; evidence 侧用它区分「策略可能反映生成时刻已知的行情」。
+    值用 repr(纯字面量), 可被 META 的 literal_eval 提取路径解析。
+    """
+    found = find_meta_assignment(code)
+    if found is None:
+        raise ValueError("找不到 META 字典")
+    meta_node = found[1]
+    lines = code.splitlines(keepends=True)
+    start = meta_node.lineno - 1
+    end = meta_node.end_lineno or meta_node.lineno
+    block = "".join(lines[start:end])
+
+    value_repr = repr(provenance)
+    key_pattern = re.compile(r"(?m)^(\s*[\"']provenance[\"']\s*:\s*)\{.*\}")
+    next_block, count = key_pattern.subn(
+        lambda m: f"{m.group(1)}{value_repr}",
+        block,
+        count=1,
+    )
+    if not count:
+        next_block = _insert_meta_field(block, "provenance", value_repr)
+    lines[start:end] = next_block.splitlines(keepends=True)
+    return "".join(lines)
+
+
 def _normalize_strategy_meta(code: str, strategy_id: str,
                              name: str | None = None,
                              description: str | None = None) -> str:
@@ -886,7 +914,19 @@ def save_strategy_code_core(
     # AI 新建策略默认草稿态(research_only=True): 不进公开列表、不可运行, 需显式 publish。
     # 仅 create 注入; update 保留既有 research_only, 避免静默取消已发布状态。
     if expected_source == "ai" and (legacy_ai_path or req.mode == "create"):
+        from datetime import UTC, datetime
+
+        from app.services.ai_provider import current_ai_model, current_ai_provider
+
         prepared["code"] = _set_meta_bool_field(prepared["code"], "research_only", True)
+        # 模型 provenance: 回测区间越过生成时刻时, evidence 会提示「策略可能反映
+        # 生成时已知的行情」。update 不重盖, 保留首次生成来源。
+        prepared["code"] = _stamp_meta_provenance(prepared["code"], {
+            "source": "ai",
+            "provider": current_ai_provider(),
+            "model": current_ai_model(),
+            "generated_at": datetime.now(UTC).isoformat(),
+        })
         prepared["meta"] = AIStrategyGenerator._extract_meta(prepared["code"])
 
     previous_code = path.read_text(encoding="utf-8") if path.exists() else None
