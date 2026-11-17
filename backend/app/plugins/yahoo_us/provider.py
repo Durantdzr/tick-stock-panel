@@ -137,6 +137,7 @@ def parse_chart(
 
 
 # ================================================================ provider
+import logging  # noqa: E402
 import random  # noqa: E402
 import time  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
@@ -144,9 +145,11 @@ from dataclasses import dataclass, field  # noqa: E402
 import polars as pl  # noqa: E402
 
 from app.data_providers.base import ProviderRequestError  # noqa: E402
-from app.data_providers.normalizer import normalize_daily  # noqa: E402
+from app.data_providers.normalizer import normalize_adj_factors, normalize_daily  # noqa: E402
 
 from .client import YahooClient, YahooError  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 _DATASETS = ("daily", "adj_factor")
 _DAILY_INTERVAL_S = 0.3  # 标的间节流基线 (雅虎 ~2000 请求/小时/IP)
@@ -270,3 +273,113 @@ def availability() -> tuple[bool, str]:
     if not rows:
         return False, "接口返回空数据, 结构可能已变化"
     return True, "ok"
+
+
+_ADJ_DETAIL_COLS = ("dividend", "prev_close")
+
+
+def _prev_close_for(prev_by_date: dict, ex_date: date) -> float | None:
+    """ex_date 之前最近一个已存交易日的原始收盘价 (严格小于)。"""
+    candidates = [d for d in prev_by_date if d < ex_date]
+    if not candidates:
+        return None
+    return prev_by_date[max(candidates)]
+
+
+# 类方法追加: get_adj_factors 挂在 YahooUSProvider 上 (定义在类外以保持
+# parse_chart 纯函数段独立可读; 挂载语义与类内定义等价)。
+def _get_adj_factors(
+    self,
+    symbols: list[str],
+    start_time: datetime | None,
+    end_time: datetime | None,
+    asset_type: str = "us",
+    prev_closes: dict[str, dict] | None = None,
+    on_chunk_done=None,
+) -> pl.DataFrame:
+    """拆股/分红事件 → ex_factor 单事件 pre/post 比值帧。
+
+    列契约: symbol/trade_date(Date)/ex_factor(Float64) + 明细列
+    dividend/prev_close (分红行才非空)。
+
+    prev_closes = {symbol: {date: 原始收盘价}}, 由调用方 (us_sync) 查 repo
+    已存原始日线传入 — 不取载荷内 bar 的 close, 因为载荷价格可能被窗口外
+    拆股预调整, 而 repo 原始价经过连续性校验。分红事件在 ex_date 前找不到
+    prev_close → WARNING 并跳过该分红分量 (拆股分量照常产出)。
+
+    start_time 增量锚点: 只返回 trade_date > start_time.date() 的事件
+    (与 kline_sync.sync_adj_factor 的窗口语义一致)。ex_factor 是事件自身
+    属性, 定稿后未来事件不影响已存值 — 增量重取幂等。
+    """
+    _require_us(asset_type)
+    if not symbols:
+        return pl.DataFrame()
+    period2 = int(datetime.now().timestamp())
+    period1 = int(start_time.timestamp()) if start_time is not None else 0
+    anchor = start_time.date() if start_time is not None else None
+    prev_map = prev_closes or {}
+    frames: list[pl.DataFrame] = []
+    failed: list[str] = []
+    for i, symbol in enumerate(symbols):
+        if i:
+            time.sleep(_DAILY_INTERVAL_S + random.uniform(0, _SYMBOL_JITTER_S))
+        try:
+            payload = self._client.chart(self._to_yahoo_symbol(symbol), period1, period2)
+            _rows, split_events, div_events = parse_chart(payload, symbol)
+        except YahooError as e:
+            failed.append(f"{symbol}: {e}")
+            continue
+        by_date: dict[date, dict] = {}
+        for ex_date, to_from in split_events:
+            by_date[ex_date] = {"split": to_from, "div": 0.0}
+        for ex_date, amount in div_events:
+            slot = by_date.setdefault(ex_date, {"split": 1.0, "div": 0.0})
+            slot["div"] += amount
+        out_rows: list[dict] = []
+        prev_by_date = prev_map.get(symbol) or {}
+        for ex_date in sorted(by_date):
+            if anchor is not None and ex_date <= anchor:
+                continue
+            slot = by_date[ex_date]
+            factor = slot["split"]
+            dividend_out: float | None = None
+            prev_out: float | None = None
+            if slot["div"] > 0:
+                prev = _prev_close_for(prev_by_date, ex_date)
+                if prev is None or prev <= slot["div"]:
+                    logger.warning(
+                        "雅虎美股 %s %s 分红事件缺 prev_close (或 prev≤分红额), 跳过分红分量",
+                        symbol, ex_date,
+                    )
+                    if factor == 1.0:
+                        continue  # 无拆股分量 → 整事件不产出
+                else:
+                    # div_events 金额已是 as-traded (parse_chart 已做 later×同日还原)
+                    d_as_traded = slot["div"]
+                    factor *= prev / (prev - d_as_traded)
+                    dividend_out = d_as_traded
+                    prev_out = prev
+            out_rows.append({
+                "symbol": symbol,
+                "trade_date": ex_date,
+                "ex_factor": factor,
+                "dividend": dividend_out,
+                "prev_close": prev_out,
+            })
+        if not out_rows:
+            if on_chunk_done:
+                on_chunk_done(i + 1, len(symbols))
+            continue
+        df = normalize_adj_factors(pl.DataFrame(out_rows), source=self.name)
+        detail = pl.DataFrame(out_rows).with_columns(
+            pl.col("trade_date").cast(pl.Date, strict=False),
+        ).select(["symbol", "trade_date", *_ADJ_DETAIL_COLS])
+        frames.append(df.join(detail, on=["symbol", "trade_date"], how="left"))
+        if on_chunk_done:
+            on_chunk_done(i + 1, len(symbols))
+    if failed:
+        raise ProviderRequestError(f"雅虎美股除权因子拉取失败: {'; '.join(failed)}")
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+
+YahooUSProvider.get_adj_factors = _get_adj_factors

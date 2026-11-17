@@ -246,3 +246,104 @@ def test_availability_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(yprovider, "YahooClient", lambda: dead)
     available, reason = yprovider.availability()
     assert not available and reason
+
+
+# ---------------------------------------------------------------- adj factors
+def _provider(payload_by_symbol: dict[str, dict]):
+    from app.plugins.yahoo_us.provider import YahooUSProvider
+
+    return YahooUSProvider(client=_FakeYahooClient(payloads=payload_by_symbol))
+
+
+def test_adj_factors_split_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    provider = _provider({"AAPL": _load("chart_aapl_split_window.json")})
+    df = provider.get_adj_factors(["AAPL"], None, None, asset_type="us")
+    assert df.height == 1
+    row = df.row(0, named=True)
+    assert row["symbol"] == "AAPL"
+    assert row["trade_date"] == date(2020, 8, 31)
+    assert row["ex_factor"] == pytest.approx(4.0)
+    assert row["dividend"] is None and row["prev_close"] is None
+
+
+def test_adj_factors_dividend_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    provider = _provider({"AAPL": _load("chart_aapl_div_window.json")})
+    prev = {"AAPL": {date(2020, 2, 6): 318.0}}
+    df = provider.get_adj_factors(["AAPL"], None, None, asset_type="us", prev_closes=prev)
+    assert df.height == 2, "div 夹具含分红事件 + 8 月拆股事件"
+    div_row = df.filter(pl.col("trade_date") == date(2020, 2, 7)).row(0, named=True)
+    assert div_row["ex_factor"] == pytest.approx(318.0 / (318.0 - 0.1925), abs=1e-9)
+    assert div_row["dividend"] == pytest.approx(0.1925, abs=1e-9)
+    assert div_row["prev_close"] == 318.0
+    split_row = df.filter(pl.col("trade_date") == date(2020, 8, 31)).row(0, named=True)
+    assert split_row["ex_factor"] == pytest.approx(4.0)
+    assert split_row["dividend"] is None
+
+
+def test_adj_factors_missing_prev_close_skips_dividend(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    provider = _provider({"AAPL": _load("chart_aapl_div_window.json")})
+    # 只提供 ex_date 之后的日期 → 事件前一日缺失
+    prev = {"AAPL": {date(2020, 3, 2): 320.0}}
+    with caplog.at_level(logging.WARNING, logger="app.plugins.yahoo_us.provider"):
+        df = provider.get_adj_factors(["AAPL"], None, None, asset_type="us", prev_closes=prev)
+    assert df.height == 1, "分红分量缺失 → 该事件不产出; 拆股分量不受影响"
+    assert df["trade_date"].to_list() == [date(2020, 8, 31)]
+    assert any("prev_close" in r.message for r in caplog.records)
+
+
+def test_adj_factors_same_day_split_and_dividend_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    ts = 1598880600  # 2020-08-31 13:30 EDT
+    payload = {
+        "chart": {"result": [{
+            "meta": {"exchangeTimezoneName": "America/New_York"},
+            "timestamp": [ts],
+            "indicators": {"quote": [{"open": [30.0], "high": [31.0], "low": [29.0],
+                                      "close": [30.5], "volume": [1000]}]},
+            "events": {
+                "splits": {str(ts): {"date": ts, "numerator": 4.0, "denominator": 1.0}},
+                "dividends": {str(ts): {"date": ts, "amount": 0.5}},
+            },
+        }], "error": None},
+    }
+    provider = _provider({"XYZ": payload})
+    prev = {"XYZ": {date(2020, 8, 28): 100.0}}
+    df = provider.get_adj_factors(["XYZ"], None, None, asset_type="us", prev_closes=prev)
+    assert df.height == 1, "同日拆股+分红合并为一行"
+    row = df.row(0, named=True)
+    # d_as_traded = 0.5 × later(=1) × 同日拆股 4 = 2.0 (分红按除权日前股数计)
+    assert row["ex_factor"] == pytest.approx(4.0 * 100.0 / (100.0 - 2.0), abs=1e-9)
+    assert row["dividend"] == pytest.approx(2.0, abs=1e-9)
+    assert row["prev_close"] == 100.0
+
+
+def test_adj_factors_incremental_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    provider = _provider({"AAPL": _load("chart_aapl_split_window.json")})
+    from datetime import datetime as dt
+
+    df = provider.get_adj_factors(["AAPL"], dt(2020, 9, 1), None, asset_type="us")
+    assert df.height == 0, "增量锚点语义: trade_date > start_time 才返回"
+    df2 = provider.get_adj_factors(["AAPL"], dt(2020, 8, 30), None, asset_type="us")
+    assert df2["trade_date"].to_list() == [date(2020, 8, 31)]
+
+
+def test_adj_factors_frame_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.yahoo_us.provider.time.sleep", lambda _s: None)
+    from app.data_providers.normalizer import ADJ_FACTOR_COLS, normalize_adj_factors
+
+    provider = _provider({"AAPL": _load("chart_aapl_split_window.json")})
+    df = provider.get_adj_factors(["AAPL"], None, None, asset_type="us")
+    assert set(df.columns) == {"symbol", "trade_date", "ex_factor", "dividend", "prev_close"}
+    assert df.schema["trade_date"] == pl.Date
+    assert df.schema["ex_factor"] == pl.Float64
+    recast = normalize_adj_factors(df)
+    assert recast["ex_factor"].to_list() == df["ex_factor"].to_list()
+    assert set(ADJ_FACTOR_COLS) <= set(recast.columns)
