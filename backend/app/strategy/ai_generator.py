@@ -153,6 +153,19 @@ def _is_dunder(name: str) -> bool:
     return bool(_DUNDER_RE.fullmatch(name))
 
 
+def _forbidden_component(path: str) -> str | None:
+    """点分路径里第一个命中命名空间句柄名单的分量。
+
+    根包白名单会放行 `import numpy.ctypeslib as nct` 这类点分导入, 用法再走
+    别名根时链上没有暴露句柄名的内层 Attribute 节点, 末位属性检查够不到;
+    对导入路径与属性链逐分量检查封住该面。
+    """
+    for component in path.split("."):
+        if component in _FORBIDDEN_ATTR_NAMES:
+            return component
+    return None
+
+
 def _fold_string(node: ast.AST) -> str | None:
     """尽量折叠字符串常量拼接 (`"__imp" + "ort__"`), 供 dunder 检查使用。
 
@@ -537,10 +550,22 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 for alias in node.names:
                     if not _module_allowed(alias.name):
                         raise ValueError(f"禁止 import {alias.name} (不在策略安全白名单)")
+                    component = _forbidden_component(alias.name)
+                    if component:
+                        raise ValueError(
+                            f"禁止 import {alias.name} "
+                            f"(命名空间句柄 {component} 可绕道执行任意命令)"
+                        )
             if isinstance(node, ast.ImportFrom):
                 mod = node.module or ""
                 if not _module_allowed(mod):
                     raise ValueError(f"禁止 from {node.module} import (不在策略安全白名单)")
+                component = _forbidden_component(mod)
+                if component:
+                    raise ValueError(
+                        f"禁止 from {mod} import "
+                        f"(命名空间句柄 {component} 可绕道执行任意命令)"
+                    )
                 module_attrs = _module_attr_names(mod)
                 for alias in node.names:
                     if alias.name == "*":
@@ -561,6 +586,14 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                     raise ValueError(f"禁止访问属性 {node.attr} (策略不允许 dunder 遍历逃逸)")
                 dotted = _dotted_name(node)
                 root = dotted.split(".", 1)[0] if dotted else None
+                # 分量级检查 (含中间分量): 先于白名单前缀的 continue 放行, 防链上任一环是句柄。
+                if dotted is not None:
+                    component = _forbidden_component(dotted)
+                    if component:
+                        raise ValueError(
+                            f"禁止访问 {dotted} "
+                            f"(命名空间句柄 {component} 可绕道执行任意命令)"
+                        )
                 if dotted is not None and root in module_aliases:
                     # 模块链上的属性: 拦截模块命名空间逃逸 (pl.os / np.lib ...)
                     resolved = module_aliases[root] + dotted[len(root):]
