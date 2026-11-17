@@ -524,6 +524,10 @@ class EvidenceRecorder:
             }),
             "lookahead": {**summary, "reports": self.reports, "sampled": True},
             "execution_timing": audit_trade_timing(result.trades, effective_config, self.strategy.execution_backend),
+            # 附加统计检验 (置换/Bootstrap): 诊断附件, 无则留 None。
+            "validation": getattr(result, "validation", None)
+            if isinstance(getattr(result, "validation", None), dict)
+            else None,
             "outputs": self.outputs,
             "result_summary": {
                 key: _scalar(result.stats.get(key)) for key in (
