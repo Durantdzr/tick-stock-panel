@@ -117,3 +117,22 @@ def test_network_error_retries_then_exhausts(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(YahooError):
         client.chart("AAPL", 1, 2)
     assert sleeps == [1.0, 2.0], "网络抖动退避应为 1s/2s, 共 3 次尝试"
+
+
+def test_probe_mode_single_attempt_no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """availability 走 chart(retries=False): 单次尝试, 零退避 (启动路径不得阻塞)。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.plugins.yahoo_us.client.time.sleep", sleeps.append)
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "fc.yahoo.com":
+            return httpx.Response(404)
+        calls.append(1)
+        return httpx.Response(429)
+
+    client = YahooClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(YahooError) as excinfo:
+        client.chart("AAPL", 1, 2, retries=False)
+    assert calls == [1] and sleeps == [], "探测模式 = 1 次请求, 无退避"
+    assert excinfo.value.status_code == 429

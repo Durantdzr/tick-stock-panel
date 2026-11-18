@@ -102,7 +102,7 @@ class _FakeYahooClient:
         self.fail = fail or set()
         self.charts: list[tuple[str, int, int]] = []
 
-    def chart(self, symbol: str, period1: int, period2: int) -> dict:
+    def chart(self, symbol: str, period1: int, period2: int, retries: bool = True) -> dict:
         self.charts.append((symbol, period1, period2))
         if symbol in self.fail:
             raise YahooError(f"HTTP 404 ({symbol} chart)", status_code=404)
@@ -228,22 +228,22 @@ def test_availability_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.plugins.yahoo_us import provider as yprovider
 
     ok = _FakeYahooClient(payloads={"AAPL": _load("chart_aapl_split_window.json")})
-    monkeypatch.setattr(yprovider, "YahooClient", lambda: ok)
+    monkeypatch.setattr(yprovider, "YahooClient", lambda timeout=15.0: ok)
     assert yprovider.availability() == (True, "ok")
 
     throttled = _FakeYahooClient(fail=set())
-    def _throttle(symbol, p1, p2):
+    def _throttle(symbol, p1, p2, retries=True):
         raise YahooError("HTTP 429 (AAPL chart)", status_code=429)
     throttled.chart = _throttle
-    monkeypatch.setattr(yprovider, "YahooClient", lambda: throttled)
+    monkeypatch.setattr(yprovider, "YahooClient", lambda timeout=15.0: throttled)
     available, reason = yprovider.availability()
     assert available and "限频" in reason, "429 证明接口可达: 注册放行, 限频由同步轮次退避"
 
     dead = _FakeYahooClient(fail=set())
-    def _dead(symbol, p1, p2):
+    def _dead(symbol, p1, p2, retries=True):
         raise YahooError("HTTP 404 (AAPL chart)", status_code=404)
     dead.chart = _dead
-    monkeypatch.setattr(yprovider, "YahooClient", lambda: dead)
+    monkeypatch.setattr(yprovider, "YahooClient", lambda timeout=15.0: dead)
     available, reason = yprovider.availability()
     assert not available and reason
 

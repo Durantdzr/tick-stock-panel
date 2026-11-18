@@ -1,7 +1,7 @@
 # Yahoo 美股数据源插件 — 设计文档
 
 日期：2026-11-18
-状态：方案已选定（A + Phase 2 后置），builder check 已合入，待用户确认
+状态：已实施（Phase 1，分支 feat/yahoo-us-plugin；Phase 2 待后续）
 
 ## 背景与意图
 

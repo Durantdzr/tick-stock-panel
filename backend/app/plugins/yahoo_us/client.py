@@ -64,8 +64,12 @@ class YahooClient:
         except httpx.HTTPError as e:
             logger.debug("yahoo cookie bootstrap failed: %s", e)
 
-    def chart(self, symbol: str, period1: int, period2: int) -> dict:
-        """拉取日线 chart 载荷 (含 div/splits 事件)。失败抛 YahooError。"""
+    def chart(self, symbol: str, period1: int, period2: int, retries: bool = True) -> dict:
+        """拉取日线 chart 载荷 (含 div/splits 事件)。失败抛 YahooError。
+
+        retries=False: 单次尝试无退避 — availability 探测专用 (该函数在 app
+        启动 load_all() 时同步执行, 重试退避会阻塞启动 20s+)。
+        """
         params = {
             "period1": period1,
             "period2": period2,
@@ -75,19 +79,19 @@ class YahooClient:
         }
         resp: httpx.Response | None = None
         net_err: httpx.HTTPError | None = None
-        for attempt in range(3):
+        for attempt in range(1 if not retries else 3):
             try:
                 resp = self._http.get(f"/v8/finance/chart/{symbol}", params=params)
             except httpx.HTTPError as e:
                 net_err = e
-                if attempt < 2:
+                if retries and attempt < 2:
                     time.sleep(_NET_BACKOFF_S[attempt])
                 continue
             if resp.status_code == 200:
                 break
             if resp.status_code in _RATE_LIMIT_CODES:
                 self._bootstrap_cookie()
-                if attempt < 2:
+                if retries and attempt < 2:
                     time.sleep(_THROTTLE_BACKOFF_S[attempt])
                 continue
             raise YahooError(f"HTTP {resp.status_code} ({symbol} chart)", status_code=resp.status_code)

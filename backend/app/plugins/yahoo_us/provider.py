@@ -260,9 +260,9 @@ def availability() -> tuple[bool, str]:
     共享代理出口持续 429 时不会让插件永久不可用; 404/403/网络异常按不可达处理。
     """
     try:
-        probe = YahooUSProvider()
+        probe = YahooUSProvider(client=YahooClient(timeout=5.0))
         now_s = int(datetime.now().timestamp())
-        payload = probe._client.chart("AAPL", now_s - 10 * 86400, now_s)
+        payload = probe._client.chart("AAPL", now_s - 10 * 86400, now_s, retries=False)
         rows, _splits, _dividends = parse_chart(payload, "AAPL")
     except YahooError as e:
         if e.status_code in (429, 401, 999):
