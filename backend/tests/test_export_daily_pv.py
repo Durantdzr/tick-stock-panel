@@ -7,12 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from scripts.export_daily_pv import (
-    from_qlib_symbol,
-    panel_to_daily_pv,
-    to_qlib_symbol,
-    warmup_start,
-)
+from app.backtest.factor_panel import from_qlib_symbol, to_qlib_symbol
+from scripts.export_daily_pv import panel_to_daily_pv, warmup_start
 
 
 def _synthetic_panel(rows: list[dict] | None = None) -> pl.DataFrame:

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -37,6 +36,7 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.backtest.engine import BacktestEngine
+from app.backtest.factor_panel import to_qlib_symbol
 from app.services.mining_preflight import enriched_partition_dates
 from app.tickflow.repository import DataStore, KlineRepository
 
@@ -44,28 +44,6 @@ from app.tickflow.repository import DataStore, KlineRepository
 _DAILY_PV_COLUMNS = ("$open", "$close", "$high", "$low", "$volume")
 _EXPORT_COLUMNS = ("datetime", "instrument", *_DAILY_PV_COLUMNS, "$factor")
 _SOURCE_REQUIRED = ("symbol", "date", "open", "high", "low", "close", "volume")
-
-_QLIB_INSTRUMENT_RE = re.compile(r"^(SH|SZ|BJ)(\d{6})$")
-
-
-def to_qlib_symbol(symbol: str) -> str:
-    """仓库格式 ``600901.SH`` → Qlib 风格 ``SH600901``；非法格式 fail-closed。"""
-    parts = symbol.split(".")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(f"unexpected repo symbol format: {symbol!r} (expect code.exchange)")
-    code, exchange = parts
-    if exchange not in {"SH", "SZ", "BJ"} or not code.isdigit() or len(code) != 6:
-        raise ValueError(f"unexpected repo symbol format: {symbol!r}")
-    return f"{exchange}{code}"
-
-
-def from_qlib_symbol(instrument: str) -> str:
-    """Qlib 风格 ``SH600901`` → 仓库格式 ``600901.SH``；非法格式 fail-closed。"""
-    matched = _QLIB_INSTRUMENT_RE.match(instrument)
-    if matched is None:
-        raise ValueError(f"unexpected qlib instrument format: {instrument!r} (expect SH\\d{6})")
-    exchange, code = matched.group(1), matched.group(2)
-    return f"{code}.{exchange}"
 
 
 def panel_to_daily_pv(panel: pl.DataFrame) -> pl.DataFrame:

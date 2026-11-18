@@ -12,10 +12,10 @@ from datetime import date, timedelta
 import polars as pl
 import pytest
 
-from scripts.factor_panel_eval import (
+from app.backtest.factor_panel import (
     EvalError,
-    _normalize_factor_values,
     evaluate_factor_values,
+    normalize_factor_values,
     sanitize_json,
 )
 
@@ -152,7 +152,7 @@ class TestFailClosed:
 
     def test_bad_schema(self):
         with pytest.raises(EvalError, match="bad_schema"):
-            _normalize_factor_values(pl.DataFrame({"foo": [1]}), qlib_instruments=False)
+            normalize_factor_values(pl.DataFrame({"foo": [1]}), qlib_instruments=False)
 
     def test_empty_price_data_errors(self):
         with pytest.raises(EvalError, match="无 enriched"):
