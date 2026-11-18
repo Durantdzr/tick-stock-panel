@@ -477,8 +477,13 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         *,
         extra_allowed_import_modules: frozenset[str] = frozenset(),
         extra_allowed_calls: frozenset[str] = frozenset(),
+        extra_allowed_attr_names: frozenset[str] = frozenset(),
     ) -> None:
         """AST 级安全检查: import 白名单 + 危险引用/属性/字符串拦截。
+
+        extra_allowed_attr_names: 按属性名放行的例外 (如因子代码合同必需的
+        read_parquet/to_parquet)。只影响 Attribute/FromImport 的名字匹配,
+        不触碰 import 白名单与内建引用拦截。
 
         注意: AST 名单不是真正的沙箱, 只能拦截已知攻击模式。真正的隔离需要
         在受限子进程里执行策略 (后续 P0)。此处按逃逸手法逐类封堵 (GH #475):
@@ -545,7 +550,9 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 for alias in node.names:
                     if alias.name == "*":
                         raise ValueError(f"禁止 from {mod} import * (通配导入绕过白名单)")
-                    if alias.name in forbidden_names or alias.name in _FORBIDDEN_ATTR_NAMES:
+                    if alias.name in forbidden_names or (
+                        alias.name in _FORBIDDEN_ATTR_NAMES and alias.name not in extra_allowed_attr_names
+                    ):
                         raise ValueError(f"禁止导入 {mod}.{alias.name} (策略不允许的危险符号)")
                     if alias.name in module_attrs:
                         raise ValueError(
@@ -566,7 +573,7 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                     resolved = module_aliases[root] + dotted[len(root):]
                     if _path_allowed(resolved):
                         continue
-                    if node.attr in _FORBIDDEN_ATTR_NAMES:
+                    if node.attr in _FORBIDDEN_ATTR_NAMES and node.attr not in extra_allowed_attr_names:
                         raise ValueError(
                             f"禁止访问 {resolved} (模块/进程/文件句柄, 可绕道执行任意命令)"
                         )
@@ -576,7 +583,7 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                             f"禁止访问 {resolved} (模块对象可绕道执行任意命令)"
                         )
                     continue
-                if node.attr in _FORBIDDEN_ATTR_NAMES:
+                if node.attr in _FORBIDDEN_ATTR_NAMES and node.attr not in extra_allowed_attr_names:
                     raise ValueError(f"禁止访问属性 {node.attr} (策略不允许的进程/文件原语)")
             if isinstance(node, ast.Constant) and isinstance(node.value, str) \
                     and id(node) not in docstrings:
