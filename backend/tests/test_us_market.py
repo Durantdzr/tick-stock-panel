@@ -7,7 +7,7 @@ enriched)、trading_rules us 契约、因子开放集合、同步服务 (fake pr
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -204,6 +204,10 @@ class _FakeUSProvider:
                    on_chunk_done=None):
         return pl.DataFrame()
 
+    def get_adj_factors(self, symbols, start_time, end_time, asset_type="us",
+                        prev_closes=None, on_chunk_done=None):
+        return pl.DataFrame()
+
     def close(self):
         pass
 
@@ -233,11 +237,13 @@ def test_us_sync_full_and_incremental(tmp_path, fake_us_provider):
     df, latest = repo.get_enriched_latest_asset("us")
     assert latest is not None and df.height == 2
 
-    # 增量: 无新数据 → rows=0, 起点从最新日期 +1 天
+    # 增量: 无新数据, 但连续性校验要求重叠窗 (14 自然日) 复核 → 幂等合并
     second = us_sync.run_us_sync(repo)
-    assert second["ok"] is True and second["daily"]["rows"] == 0
+    assert second["ok"] is True and second["daily"]["errors"] == []
+    assert second["daily"]["rows"] == 28, "重叠窗 14 自然日 × 2 白名单标的"
     starts = [s for _, s in fake_us_provider.daily_calls[-2:]]
-    assert all(s is not None and s.date() == date.today() for s in starts)
+    assert all(s is not None and s.date() == date.today() - timedelta(days=14)
+               for s in starts), "增量起点回退重叠窗口" 
 
 
 def test_us_sync_holiday_skip(tmp_path, monkeypatch):
@@ -280,7 +286,8 @@ def test_run_us_sync_reports_progress(tmp_path, fake_us_provider):
         repo, on_progress=lambda stage, pct, msg: events.append(stage),
     )
     assert result["ok"] is True
-    assert events == ["instruments", "daily", "enriched"]
+    assert events == ["instruments", "daily", "enriched", "factors"]
+    assert result["factors"]["ok"] is True
 
 
 # ================================================================
@@ -292,3 +299,276 @@ def test_lot_round_shares_lot_size_1_whole_shares():
     # 美股: 1 股整股 (10000/95 = 105.26 → 105 股)
     assert _lot_round_shares(10_000.0, 95.0, 0.0, 1.0) == pytest.approx(105.0)
     assert _lot_round_shares(9_499.0, 95.0, 0.0, 1.0) == pytest.approx(99.0)
+
+
+# ================================================================
+# yahoo_us 路由集成 (Task 5: 连续性校验 / 分钟守卫 / 因子落盘 / 维表回退)
+# ================================================================
+
+class _SeqUSProvider:
+    """按序返回预置帧; 记录 get_daily / get_adj_factors 调用供断言。"""
+
+    name = "sequs"
+
+    def __init__(self, daily_responses: list[pl.DataFrame] | None = None,
+                 adj_frame: pl.DataFrame | None = None):
+        self.daily_responses = list(daily_responses or [])
+        self.adj_frame = adj_frame
+        self.daily_calls: list[tuple] = []
+        self.adj_calls: list[tuple] = []
+
+    def fetch_instruments_page(self, page: int):
+        rows = pl.DataFrame({
+            "symbol": ["AAPL", "MSFT"], "name": ["a", "m"], "code": ["AAPL", "MSFT"],
+            "exchange": ["NASDAQ", "NASDAQ"], "asset_type": ["us", "us"],
+            "source": ["eastmoney_us"] * 2,
+        }).to_dicts()
+        return (rows, 2) if page == 1 else ([], 2)
+
+    def get_instruments(self, asset_type="us"):
+        return pl.DataFrame(self.fetch_instruments_page(1)[0])
+
+    def get_daily(self, symbols, start_time, end_time, asset_type="us", on_chunk_done=None):
+        self.daily_calls.append((tuple(symbols), start_time))
+        return self.daily_responses.pop(0) if self.daily_responses else pl.DataFrame()
+
+    def get_minute(self, symbols, start_time, end_time, asset_type="us", freq="1m",
+                   on_chunk_done=None):
+        return pl.DataFrame()
+
+    def get_adj_factors(self, symbols, start_time, end_time, asset_type="us",
+                        prev_closes=None, on_chunk_done=None):
+        self.adj_calls.append((tuple(symbols), start_time))
+        return self.adj_frame if self.adj_frame is not None else pl.DataFrame()
+
+    def close(self):
+        pass
+
+
+class _BareUSProvider:
+    """无维表分页能力的最小 provider (回退测试用)。"""
+
+    name = "bareus"
+
+    def get_daily(self, symbols, start_time, end_time, asset_type="us", on_chunk_done=None):
+        return pl.DataFrame()
+
+    def close(self):
+        pass
+
+
+def _bars(symbol: str, dates: list[date], closes: list[float]) -> pl.DataFrame:
+    n = len(dates)
+    return pl.DataFrame({
+        "symbol": [symbol] * n, "date": dates,
+        "open": closes, "high": closes, "low": closes, "close": closes,
+        "volume": [1_000_000.0] * n, "amount": [1.0] * n,
+    })
+
+
+def _read_us_daily(repo) -> pl.DataFrame:
+    import polars as pl_
+
+    base = us_sync._us_daily_dir(repo)
+    return pl_.read_parquet(str(base / "date=*" / "*.parquet"))
+
+
+def _overlap_fixture(tmp_path):
+    """预存 20 根日线; 返回 (repo, dates, closes, 重叠 10 根日期)。"""
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    dates = [date(2026, 1, 5) + timedelta(days=i) for i in range(20)]
+    closes = [100.0 + float(i) for i in range(20)]
+    repo.append_daily_asset("us", _bars("AAPL", dates, closes))
+    return repo, dates, closes, dates[-10:]
+
+
+def test_us_sync_daily_overlap_ok(tmp_path, monkeypatch):
+    repo, dates, closes, overlap = _overlap_fixture(tmp_path)
+    latest = dates[-1]
+    new_dates = [*overlap, latest + timedelta(days=1)]
+    fake = _SeqUSProvider(daily_responses=[_bars("AAPL", new_dates, [*closes[-10:], 125.0])])
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+
+    result = us_sync.sync_us_daily(repo, incremental=True)
+    assert result["ok"] is True and result["errors"] == []
+    assert _read_us_daily(repo)["date"].max() == latest + timedelta(days=1)
+    ((_sym,), start_time) = fake.daily_calls[0]
+    assert start_time == (
+        datetime.combine(latest + timedelta(days=1), datetime.min.time())
+        - timedelta(days=14)
+    ), "增量起点回退 14 天取重叠窗口"
+
+
+def test_us_sync_daily_overlap_split_triggers_full_refetch(tmp_path, monkeypatch):
+    repo, dates, closes, overlap = _overlap_fixture(tmp_path)
+    back_adjusted = _bars("AAPL", overlap, [c * 4 for c in closes[-10:]])
+    full_history = _bars("AAPL", dates, [999.0] * len(dates))
+    fake = _SeqUSProvider(daily_responses=[back_adjusted, full_history])
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+
+    result = us_sync.sync_us_daily(repo, incremental=True)
+    assert result["ok"] is True and result["errors"] == []
+    assert len(fake.daily_calls) == 2
+    assert fake.daily_calls[1] == (("AAPL",), None), "检出回溯调整 → 全史重取 (start=None)"
+    stored = _read_us_daily(repo)
+    assert stored.filter(pl.col("date") == dates[0])["close"][0] == 999.0, "全史覆盖存量"
+
+
+def test_us_sync_daily_overlap_mismatch_rejects(tmp_path, monkeypatch):
+    repo, dates, closes, overlap = _overlap_fixture(tmp_path)
+    # 比值不一致 (前半 ×4 / 后半 ×1.37) → 既非全 1 也非单一拆股比
+    corrupt = _bars("AAPL", overlap,
+                    [c * 4 for c in closes[-10:-5]] + [c * 1.37 for c in closes[-5:]])
+    fake = _SeqUSProvider(daily_responses=[corrupt])
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+
+    result = us_sync.sync_us_daily(repo, incremental=True)
+    assert result["ok"] is True
+    assert any("AAPL" in e for e in result["errors"]), "异常比值上浮 stage error"
+    assert len(fake.daily_calls) == 1, "mismatch 不重取"
+    stored = _read_us_daily(repo)
+    assert stored["date"].max() == dates[-1], "拒绝落盘: 不写新分区"
+    assert stored.filter(pl.col("date") == dates[0])["close"][0] == closes[0]
+
+
+def test_us_sync_instruments_falls_back_to_eastmoney(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from app.data_providers import custom as custom_sources
+
+    repo = KlineRepository(DataStore(tmp_path))
+    fake_em = _SeqUSProvider()
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: _BareUSProvider())
+    monkeypatch.setattr(
+        custom_sources, "get_provider",
+        lambda name: fake_em if name == "eastmoney_us" else None,
+    )
+    with caplog.at_level(logging.WARNING, logger="app.services.us_sync"):
+        count = us_sync.sync_us_instruments(repo)
+    assert count == 2
+    assert any("eastmoney_us" in r.message for r in caplog.records), "回退留痕"
+
+
+def test_us_sync_instruments_fallback_unavailable_keeps_existing(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from app.data_providers import custom as custom_sources
+
+    repo = KlineRepository(DataStore(tmp_path))
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: _BareUSProvider())
+    monkeypatch.setattr(custom_sources, "get_provider", lambda name: None)
+    monkeypatch.setattr(us_sync, "_instruments_fresh", lambda repo_: False)
+    with caplog.at_level(logging.WARNING, logger="app.services.us_sync"):
+        count = us_sync.sync_us_instruments(repo)  # 不得抛
+    assert count == 0, "东财也不可用 → 跳过刷新保留存量"
+
+
+def test_us_sync_minute_skips_when_minute_not_declared(tmp_path, monkeypatch):
+    from app.data_providers import custom as custom_sources
+
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    fake = _SeqUSProvider()
+    minute_calls: list[int] = []
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+    monkeypatch.setattr(
+        fake, "get_minute",
+        lambda *a, **k: minute_calls.append(1) or pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        custom_sources, "provider_has_dataset", lambda name, ds: ds != "minute")
+    result = us_sync.sync_us_minute(repo)
+    assert result["ok"] is True and result["skipped"] == "minute_not_declared"
+    assert minute_calls == []
+
+
+def test_us_sync_adj_factors_skips_when_not_declared(tmp_path, monkeypatch):
+    from app.data_providers import custom as custom_sources
+
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    adj_calls: list[int] = []
+    fake = _SeqUSProvider(adj_frame=pl.DataFrame({
+        "symbol": ["AAPL"], "trade_date": [date(2026, 1, 5)], "ex_factor": [4.0],
+    }))
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+    monkeypatch.setattr(
+        fake, "get_adj_factors",
+        lambda *a, **k: adj_calls.append(1) or pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        custom_sources, "provider_has_dataset", lambda name, ds: ds != "adj_factor")
+    result = us_sync.sync_us_adj_factors(repo)
+    assert result["ok"] is True and result["skipped"] == "adj_factor_not_declared"
+    assert adj_calls == []
+
+
+def test_us_sync_adj_factors_happy_path_and_anchor(tmp_path, monkeypatch):
+    from app.data_providers import custom as custom_sources
+
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    fake = _SeqUSProvider(adj_frame=pl.DataFrame({
+        "symbol": ["AAPL"], "trade_date": [date(2026, 1, 5)], "ex_factor": [4.0],
+    }))
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+    monkeypatch.setattr(
+        custom_sources, "provider_has_dataset",
+        lambda name, ds: ds in ("daily", "adj_factor"))
+    result = us_sync.sync_us_adj_factors(repo)
+    assert result["ok"] is True and result["rows"] == 1
+    out = repo.store.data_dir / "adj_factor_us" / "all.parquet"
+    assert out.exists()
+    assert pl.read_parquet(out)["ex_factor"].to_list() == [4.0]
+    us_sync.sync_us_adj_factors(repo)
+    (_syms, anchor) = fake.adj_calls[-1]
+    assert anchor == datetime(2026, 1, 5), "增量锚点 = 已存 max(trade_date) (provider 排他过滤)"
+
+
+def test_us_sync_adj_factors_anchor_no_off_by_one(tmp_path, monkeypatch):
+    """审查 I-1: 锚点必须等于已存 max(trade_date) (provider 为排他过滤)。
+
+    若锚点 = max+1d, 恰好落在 max+1d 的事件会被排他过滤吞掉且永不入库。
+    """
+    from app.data_providers import custom as custom_sources
+
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    calls: list[tuple] = []
+    frames = iter([
+        pl.DataFrame({"symbol": ["AAPL"], "trade_date": [date(2020, 8, 31)], "ex_factor": [4.0]}),
+        pl.DataFrame({"symbol": ["AAPL"], "trade_date": [date(2020, 9, 1)], "ex_factor": [2.0]}),
+    ])
+
+    def fake_adj(symbols, start_time, end_time, asset_type="us", prev_closes=None, on_chunk_done=None):
+        calls.append(start_time)
+        return next(frames)
+
+    fake = _SeqUSProvider()
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+    monkeypatch.setattr(fake, "get_adj_factors", fake_adj)
+    monkeypatch.setattr(
+        custom_sources, "provider_has_dataset",
+        lambda name, ds: ds in ("daily", "adj_factor"))
+
+    us_sync.sync_us_adj_factors(repo)
+    us_sync.sync_us_adj_factors(repo)
+    assert calls[-1] == datetime(2020, 8, 31), "锚点 = 已存 max(trade_date) (provider 排他过滤)"
+    stored = pl.read_parquet(repo.store.data_dir / "adj_factor_us" / "all.parquet")
+    assert stored["trade_date"].to_list() == [date(2020, 8, 31), date(2020, 9, 1)], \
+        "max+1d 落点事件不得丢失"
+
+
+def test_us_sync_daily_overlap_vendor_noise_ok(tmp_path, monkeypatch):
+    """审查 I-2: 重叠区一致的小口径噪声 (≤0.5%) 视为 ok, 不得永久拒收。"""
+    repo, dates, closes, overlap = _overlap_fixture(tmp_path)
+    latest = dates[-1]
+    noisy = _bars("AAPL", [*overlap, latest + timedelta(days=1)],
+                  [c * 1.00003 for c in closes[-10:]] + [125.0])
+    fake = _SeqUSProvider(daily_responses=[noisy])
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+
+    result = us_sync.sync_us_daily(repo, incremental=True)
+    assert result["ok"] is True and result["errors"] == [], "厂商分位噪声不得触发拒绝落盘"
+    assert _read_us_daily(repo)["date"].max() == latest + timedelta(days=1)

@@ -1,0 +1,18 @@
+# 雅虎财经美股公开行情插件 (query1.finance.yahoo.com v8 chart 公开端点)。
+# 纯 HTTP REST, 无需 API Key。asset_types: [us] — 声明后不进入 A 股 7 能力路由
+# 候选, 由美股同步服务 (services/us_sync.py) 专用。
+# ⚠️ 固有缺陷 (数据源层面, 文档化不隐瞒):
+#   - 雅虎无退市股数据 → 任何"当前存活标的"宇宙的回测带幸存者偏差;
+#   - 历史 ticker 更名陷阱: 旧代码现可能属于其他公司 (如 FB/BBT), 映射后拉空
+#     会 fail-closed 上浮, 不会静默取错价;
+#   - 非官方接口: 雅虎按 IP 限频 (~2000 请求/小时), client 内置退避; 共享代理
+#     出口可能持续 429 (availability 视为可达放行, 同步轮次自会暴露)。
+
+name: yahoo_us
+display_name: "雅虎财经·美股"
+runtime: none
+entry: app.plugins.yahoo_us.provider:YahooUSProvider
+check: app.plugins.yahoo_us.provider:availability
+datasets: [daily, adj_factor]
+asset_types: [us]
+description: "雅虎财经美股公开行情(非官方)。日K(反向还原为原始价, 美东交易日口径)与拆股/分红除权因子事件; volume=股, 无成交额字段。雅虎无退市股数据(幸存者偏差), 无分钟K与实时行情, 维表由 eastmoney_us 承载。"
