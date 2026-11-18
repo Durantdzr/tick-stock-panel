@@ -120,7 +120,7 @@ def run_factor_script(workdir: Path, *, timeout: float = 120.0) -> SandboxResult
     env["MPLBACKEND"] = "Agg"
     started = time.monotonic()
     try:
-        completed = subprocess.run(  # noqa: S603 - 固定解释器 + 固定脚本名, 无 shell
+        completed = subprocess.run(
             [sys.executable, FACTOR_CODE_FILE],
             cwd=workdir,
             env=env,
@@ -153,7 +153,7 @@ def load_factor_values(path: Path) -> pl.DataFrame:
         raise FactorSandboxError("no_output", f"未找到因子值输出 {FACTOR_VALUES_FILE}")
     try:
         df = pl.read_parquet(path)
-    except Exception as exc:  # noqa: BLE001 - 上层只需结构化错误
+    except Exception as exc:
         raise FactorSandboxError("bad_output", f"因子值 parquet 读取失败: {exc}") from exc
     required = ("symbol", "date", "value")
     missing = [c for c in required if c not in df.columns]
@@ -167,7 +167,7 @@ def load_factor_values(path: Path) -> pl.DataFrame:
             pl.col("date").cast(pl.Date, strict=True).alias("date"),
             pl.col("value").cast(pl.Float64, strict=False).alias("value"),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise FactorSandboxError("bad_output", f"因子值列类型不符（date 需可解析为日期）: {exc}") from exc
     if df["value"].null_count() == df.height:
         raise FactorSandboxError("bad_output", "因子值全为空")

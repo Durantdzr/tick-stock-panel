@@ -80,7 +80,7 @@ class TestValidateFactorCode:
         ],
     )
     def test_dangerous_patterns_rejected(self, bad: str):
-        with pytest.raises(FactorSandboxError, match="validation|syntax"):
+        with pytest.raises(FactorSandboxError, match=r"validation|syntax"):
             validate_factor_code(bad)
 
     def test_syntax_error_code(self):
