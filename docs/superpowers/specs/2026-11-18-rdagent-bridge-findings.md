@@ -72,3 +72,12 @@
 | 指标交叉验证 | REV5 手跑 IC=0.0132/IR=0.063 == trace 内一致 |
 | 仓库回归 | worktree 内 backtest 模块 471 passed / 1 skipped（基线未动） |
 | ruff | 全部新增文件零告警 |
+
+## 六、Phase B M1 结论（2026-11-18 增补）
+
+B-M1 完成：进化循环已内嵌本仓库后端（`app/ai_mining/`），RD-Agent 本体不再参与运行。
+
+- **端到端实测**（真 LLM glm-5.2，智谱直连，2 轮 × 2 因子，run `b70b1ce7`）：8 次 chat 调用完成全部循环；LLM 第 1 轮产出 REV5/TURN_AB20、第 2 轮基于反馈自主转向 AMP20/ONR20（记忆注入生效，无向量库）；TURN_AB20 IC=0.054/IC_IR=0.637/胜率 75%（真实全市场评估，覆盖率 99.7%+）；AMP20 指标手跑交叉验证一致（IC=0.0458/IR=0.1413）。
+- **SOTA 落地实测**：4 个进化因子经 ext_data 自动注册，运行中的服务 `GET /api/factors` 立即可见 `ext_llmevo_{amp20,onr20,rev5,turn_ab20}_value`。
+- 运维文档：`docs/ai-mining.md`；设计：`2026-11-18-rdagent-phaseb-design.md`。
+- 后续候选（M2）：最小前端工作台页、向量知识库（需 embedding）、模型进化（fin_model 对应物）、 更多市场（etf 已兼容评估路径）。
