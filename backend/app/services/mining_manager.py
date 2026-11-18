@@ -171,7 +171,9 @@ class MiningJobManager:
         try:
             # 守护复验与挖掘共用 "mining" heavy 槽: 两者都是全市场级内存任务,
             # 串行化避免双份大矩阵并发 (设计见 docs/auto-strategy-lab-plan.md §3.4)。
-            with shared_heavy_job_limiter.slot("mining", cancel_event=cancel_event):
+            # 其它 kind (如 llm_evo 的 LLM 循环) 无全市场矩阵内存压力, 走 "normal" 槽。
+            slot_kind = "mining" if self._kind in ("mining", "guardian") else "normal"
+            with shared_heavy_job_limiter.slot(slot_kind, cancel_event=cancel_event):
                 if not self._mark_running(run_id, cancel_event):
                     return
                 manifest = self._store.get(run_id)

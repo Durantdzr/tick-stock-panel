@@ -14,12 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.api import (
     abnormal,
+    ai_mining,
     alerts,
     analysis,
     backtest,
     config_backup,
     crypto,
-    us,
     data,
     definitions,
     events,
@@ -52,6 +52,7 @@ from app.api import (
     stock_analysis,
     strategy,
     task_registry,
+    us,
     watchlist,
 )
 from app.api import auth as auth_api
@@ -164,6 +165,21 @@ async def _application_lifespan(app: FastAPI):
         logger.warning(
             "recovered %d interrupted guardian runs", recovered_guardian_runs
         )
+    # LLM 因子进化: 复用挖掘任务编排, 独立 namespace; LLM 循环不吃 heavy 槽
+    # (默认 "normal" 权重), 单飞由 run store 状态机 + 防重入 409 保证。
+    from app.services.mining_jobs import MiningRunStore as _MiningRunStore
+
+    ai_mining_manager = MiningJobManager(
+        store.data_dir,
+        kind="llm_evo",
+        store=_MiningRunStore(store.data_dir, namespace="llm_evo"),
+    )
+    recovered_ai_mining_runs = ai_mining_manager.recover_interrupted()
+    app.state.ai_mining_manager = ai_mining_manager
+    if recovered_ai_mining_runs:
+        logger.warning(
+            "recovered %d interrupted ai-mining runs", recovered_ai_mining_runs
+        )
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
     if settings.backtest_matrix_disk_cache_enabled:
         try:
@@ -172,7 +188,7 @@ async def _application_lifespan(app: FastAPI):
             logger.warning("enriched generation requires a full rebuild: %s", exc)
     # 指标异步预热标志: enriched 缓存在后台线程构建, 完成后置 True
     app.state.indicators_ready = False
-    repo._on_warmup_done = lambda: setattr(app.state, "indicators_ready", True)  # noqa: SLF001
+    repo._on_warmup_done = lambda: setattr(app.state, "indicators_ready", True)
 
     # Polars 缓存预热 — enriched 的重计算 (107万行 compute_indicators) 推后台,
     # instruments/index/ETF 仍同步 (毫秒级)。应用立即 ready, 指标算完后自动替换。
@@ -418,13 +434,13 @@ async def _application_lifespan(app: FastAPI):
                 logger.info("matrix cache prewarm done: %s", result)
             except (HeavyJobCancelledError, MatrixPrewarmCancelledError):
                 logger.info("matrix cache prewarm cancelled")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("matrix cache prewarm failed")
 
         if not matrix_prewarm_owner.schedule(_prewarm):
             logger.info("matrix cache prewarm already running or shutting down, skip")
 
-    repo._on_refresh_done = _schedule_matrix_cache_prewarm  # noqa: SLF001
+    repo._on_refresh_done = _schedule_matrix_cache_prewarm
     if repo.enriched_ready:
         _schedule_matrix_cache_prewarm()
 
@@ -482,7 +498,7 @@ async def _application_lifespan(app: FastAPI):
     try:
         yield
     finally:
-        repo._on_refresh_done = None  # noqa: SLF001
+        repo._on_refresh_done = None
         wd = getattr(app.state, "watchdog", None)
         if wd:
             await wd.stop()
@@ -659,6 +675,7 @@ app.include_router(backtest.router)
 app.include_router(factors.router)
 app.include_router(definitions.router)
 app.include_router(mining.router)
+app.include_router(ai_mining.router)
 app.include_router(guardian.router)
 app.include_router(lab.router)
 app.include_router(intraday.router)
@@ -704,8 +721,6 @@ app.state.extension_load_errors = extension_load_errors
 # 能力门控异常 → 403(而非默认 500)
 # 业务代码用 capset.require(Cap.X) 断言能力,缺失时抛 CapabilityDenied;
 # 若不注册 handler 会冒泡成 500 Internal Server Error,对前端不友好且语义错误。
-from fastapi import Request
-from fastapi.responses import JSONResponse
 
 from app.tickflow.capabilities import CapabilityDenied
 
