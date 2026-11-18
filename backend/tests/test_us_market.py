@@ -154,8 +154,10 @@ def test_repo_enriched_us(tmp_path):
 
 def test_us_factors_match_crypto_set():
     from app.factors.registry import all_factors
-    us = {f.id for f in all_factors("us")}
-    crypto = {f.id for f in all_factors("crypto")}
+    # 排除 ext_ 前缀: 用户经 ext_data 落地的因子是运行时数据而非内置集合,
+    # 钉死总数会把任何 ext_data 增量误判为 us/crypto 集合不一致。
+    us = {f.id for f in all_factors("us") if not f.id.startswith("ext_")}
+    crypto = {f.id for f in all_factors("crypto") if not f.id.startswith("ext_")}
     assert len(us) == 68
     assert us == crypto  # 东财美股同样无股本/涨跌停, 排除集合一致
 

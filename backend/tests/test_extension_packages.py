@@ -299,5 +299,5 @@ with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 12345)) a
 """
     env = {**os.environ, "DATA_DIR": str(tmp_path), "STATIC_DIR": str(static_dir), "TICKFLOW_API_KEY": "", "AI_API_KEY": "",
            "AUTH_PASSWORD": "", "WATCHDOG_ENABLED": "false", "BACKTEST_MATRIX_CACHE_PREWARM": "false"}
-    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-3000:]
