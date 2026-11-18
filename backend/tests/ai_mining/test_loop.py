@@ -115,16 +115,18 @@ def test_runtime_full_round(tmp_path: Path, monkeypatch):
     panel = _panel_df()
     monkeypatch.setattr(runtime_mod, "make_price_loader", lambda data_dir, asset_type: _price_loader(panel))
 
-    run_dir = tmp_path / "run"
+    run_dir = runtime_mod.run_dir_for(tmp_path, "runtest1")
     progress_events: list[dict] = []
     summary = runtime_mod.run_ai_mining_runtime(
         {
-            "run_dir": str(run_dir),
-            "eval_start": EVAL_START.isoformat(),
-            "eval_end": EVAL_END.isoformat(),
-            "rounds": 1,
-            "factors_per_round": 1,
-            "max_llm_calls": 10,
+            "run_id": "runtest1",
+            "request": {
+                "eval_start": EVAL_START.isoformat(),
+                "eval_end": EVAL_END.isoformat(),
+                "rounds": 1,
+                "factors_per_round": 1,
+                "max_llm_calls": 10,
+            },
         },
         data_dir=tmp_path,
         engine=_DuckEngine(panel),
@@ -160,11 +162,13 @@ def test_runtime_cancel_stops_before_round(tmp_path: Path, monkeypatch):
 
     summary = runtime_mod.run_ai_mining_runtime(
         {
-            "run_dir": str(tmp_path / "run"),
-            "eval_start": EVAL_START.isoformat(),
-            "eval_end": EVAL_END.isoformat(),
-            "rounds": 1,
-            "max_llm_calls": 10,
+            "run_id": "runcancel",
+            "request": {
+                "eval_start": EVAL_START.isoformat(),
+                "eval_end": EVAL_END.isoformat(),
+                "rounds": 1,
+                "max_llm_calls": 10,
+            },
         },
         data_dir=tmp_path,
         engine=_DuckEngine(panel),
@@ -176,7 +180,7 @@ def test_runtime_cancel_stops_before_round(tmp_path: Path, monkeypatch):
 
 class TestWorkerKind:
     def test_make_task_accepts_dict_config(self, tmp_path: Path):
-        config = {"run_dir": str(tmp_path / "run"), "eval_start": "2026-06-10", "eval_end": "2026-06-25"}
+        config = {"run_id": "r1", "request": {"eval_start": "2026-06-10", "eval_end": "2026-06-25"}}
         task = make_worker_task("llm_evo", tmp_path, config)
         assert task["kind"] == "llm_evo"
         assert task["config"] == config
