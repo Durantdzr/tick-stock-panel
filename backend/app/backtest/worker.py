@@ -167,6 +167,10 @@ def make_worker_task(kind: str, data_dir: Path, config) -> dict[str, Any]:
         if not isinstance(config, dict):
             raise TypeError("guardian worker config must be a dict")
         encoded = dict(config)
+    elif kind == "llm_evo":
+        if not isinstance(config, dict):
+            raise TypeError("llm_evo worker config must be a dict")
+        encoded = dict(config)
     else:
         raise ValueError(f"unsupported worker task kind: {kind}")
     return {
@@ -272,6 +276,18 @@ def _worker_entry(task: dict[str, Any], event_queue, cancel_event) -> None:
                 strategy_engine=strategy_engine,
                 progress_cb=_progress,
                 cancel_check=cancel_event,
+            )
+        elif kind == "llm_evo":
+            # 延迟 import: worker 启动路径保持轻量 (LLM/循环栈不进其它任务)
+            from app.ai_mining.runtime import run_ai_mining_runtime
+
+            result = run_ai_mining_runtime(
+                task["config"],
+                data_dir=data_dir,
+                engine=service.engine,
+                progress_cb=_progress,
+                cancel_check=cancel_event,
+                rss_sampler=sampler,
             )
         else:
             raise ValueError(f"unsupported worker task kind: {kind}")
