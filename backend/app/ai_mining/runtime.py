@@ -8,9 +8,10 @@ run 目录约定: ``{data_dir}/research/{RUNS_NAMESPACE}/runs/{run_id}/``。
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.ai_mining.loop import LoopConfig, run_loop_sync
 from app.backtest.factor_panel import make_price_loader, sanitize_json
@@ -75,4 +76,15 @@ def run_ai_mining_runtime(
         progress_cb=progress_cb,
         cancel_check=cancel_check,
     )
+
+    # SOTA 落地: 循环完成且未被取消时, 把优胜因子经 ext_data 注册进面板
+    if summary.get("stopped_reason") == "completed":
+        from app.ai_mining.ext_landing import land_sota_factors
+        from app.ai_mining.memory import load_memory
+
+        if cancel_check is None or not getattr(cancel_check, "is_set", lambda: bool(cancel_check))():
+            memory = load_memory(run_dir)
+            landed = land_sota_factors(run_dir, memory, data_dir)
+            if landed:
+                summary["landed_ext_factors"] = landed
     return sanitize_json(summary)
