@@ -594,9 +594,15 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 dotted = _dotted_name(node)
                 root = dotted.split(".", 1)[0] if dotted else None
                 # 分量级检查 (含中间分量): 先于白名单前缀的 continue 放行, 防链上任一环是句柄。
+                # 例外: 末段属性名命中 extra_allowed_attr_names 时放行 (因子合同 parquet IO
+                # 这类定向豁免); 中间分量是命名空间句柄逃逸面, 依旧严格拦截。
                 if dotted is not None:
-                    component = _forbidden_component(dotted)
-                    if component:
+                    components = dotted.split(".")
+                    for idx, component in enumerate(components):
+                        if component not in _FORBIDDEN_ATTR_NAMES:
+                            continue
+                        if idx == len(components) - 1 and component in extra_allowed_attr_names:
+                            continue
                         raise ValueError(
                             f"禁止访问 {dotted} "
                             f"(命名空间句柄 {component} 可绕道执行任意命令)"
