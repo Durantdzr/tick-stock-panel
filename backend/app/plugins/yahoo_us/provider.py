@@ -96,6 +96,10 @@ def parse_chart(
     lows = quote.get("low") or []
     closes = quote.get("close") or []
     volumes = quote.get("volume") or []
+    if ts_list and not closes:
+        # timestamp 在而 quote 收盘序列缺失 = 上游字段漂移, 显式抛错而非坍缩成
+        # 空数据被增量同步误读为"无新数据" (审查 I-3, fail-closed)
+        raise YahooError(f"雅虎响应结构变化: {symbol} quote 序列缺失 (timestamp={len(ts_list)})")
 
     intraday = now_et.time() < _CLOSE_CUTOFF
     today = now_et.date()
@@ -235,6 +239,11 @@ class YahooUSProvider:
                 rows, _splits, _dividends = parse_chart(payload, symbol)
             except YahooError as e:
                 failed.append(f"{symbol}: {e}")
+                continue
+            if start_time is None and not rows:
+                # 全史拉取为 0 行 = 映射错位嫌疑 (旧 ticker 现属其他公司/已改名),
+                # docstring 承诺的 fail-closed: 上浮而非静默跳过 (审查 I-3)
+                failed.append(f"{symbol}: 全史拉取为空, 疑似 ticker 映射错位")
                 continue
             df = normalize_daily(rows, source=self.name)
             if not df.is_empty():

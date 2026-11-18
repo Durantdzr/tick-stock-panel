@@ -523,4 +523,52 @@ def test_us_sync_adj_factors_happy_path_and_anchor(tmp_path, monkeypatch):
     assert pl.read_parquet(out)["ex_factor"].to_list() == [4.0]
     us_sync.sync_us_adj_factors(repo)
     (_syms, anchor) = fake.adj_calls[-1]
-    assert anchor == datetime(2026, 1, 6), "增量锚点 = 已存 max(trade_date)+1d"
+    assert anchor == datetime(2026, 1, 5), "增量锚点 = 已存 max(trade_date) (provider 排他过滤)"
+
+
+def test_us_sync_adj_factors_anchor_no_off_by_one(tmp_path, monkeypatch):
+    """审查 I-1: 锚点必须等于已存 max(trade_date) (provider 为排他过滤)。
+
+    若锚点 = max+1d, 恰好落在 max+1d 的事件会被排他过滤吞掉且永不入库。
+    """
+    from app.data_providers import custom as custom_sources
+
+    us_universe.save_universe(tmp_path, ["AAPL"])
+    repo = KlineRepository(DataStore(tmp_path))
+    calls: list[tuple] = []
+    frames = iter([
+        pl.DataFrame({"symbol": ["AAPL"], "trade_date": [date(2020, 8, 31)], "ex_factor": [4.0]}),
+        pl.DataFrame({"symbol": ["AAPL"], "trade_date": [date(2020, 9, 1)], "ex_factor": [2.0]}),
+    ])
+
+    def fake_adj(symbols, start_time, end_time, asset_type="us", prev_closes=None, on_chunk_done=None):
+        calls.append(start_time)
+        return next(frames)
+
+    fake = _SeqUSProvider()
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+    monkeypatch.setattr(fake, "get_adj_factors", fake_adj)
+    monkeypatch.setattr(
+        custom_sources, "provider_has_dataset",
+        lambda name, ds: ds in ("daily", "adj_factor"))
+
+    us_sync.sync_us_adj_factors(repo)
+    us_sync.sync_us_adj_factors(repo)
+    assert calls[-1] == datetime(2020, 8, 31), "锚点 = 已存 max(trade_date) (provider 排他过滤)"
+    stored = pl.read_parquet(repo.store.data_dir / "adj_factor_us" / "all.parquet")
+    assert stored["trade_date"].to_list() == [date(2020, 8, 31), date(2020, 9, 1)], \
+        "max+1d 落点事件不得丢失"
+
+
+def test_us_sync_daily_overlap_vendor_noise_ok(tmp_path, monkeypatch):
+    """审查 I-2: 重叠区一致的小口径噪声 (≤0.5%) 视为 ok, 不得永久拒收。"""
+    repo, dates, closes, overlap = _overlap_fixture(tmp_path)
+    latest = dates[-1]
+    noisy = _bars("AAPL", [*overlap, latest + timedelta(days=1)],
+                  [c * 1.00003 for c in closes[-10:]] + [125.0])
+    fake = _SeqUSProvider(daily_responses=[noisy])
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: fake)
+
+    result = us_sync.sync_us_daily(repo, incremental=True)
+    assert result["ok"] is True and result["errors"] == [], "厂商分位噪声不得触发拒绝落盘"
+    assert _read_us_daily(repo)["date"].max() == latest + timedelta(days=1)

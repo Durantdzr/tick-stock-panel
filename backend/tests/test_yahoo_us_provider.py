@@ -347,3 +347,30 @@ def test_adj_factors_frame_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     recast = normalize_adj_factors(df)
     assert recast["ex_factor"].to_list() == df["ex_factor"].to_list()
     assert set(ADJ_FACTOR_COLS) <= set(recast.columns)
+
+
+def test_parse_raises_on_quote_structure_change() -> None:
+    """审查 I-3: timestamp 在而 quote 序列缺失 → 结构变化必须显式抛错。"""
+    payload = {
+        "chart": {"result": [{
+            "meta": {"exchangeTimezoneName": "America/New_York"},
+            "timestamp": [1598275800, 1598362200],
+            "indicators": {"quote": [{}]},  # close 序列缺失 (上游字段漂移)
+        }], "error": None},
+    }
+    with pytest.raises(YahooError, match="结构"):
+        parse_chart(payload, "AAPL", now_et=_NOW)
+
+
+def test_get_daily_full_history_empty_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """审查 I-3 补充: 全史请求解析出 0 行 → 映射错位嫌疑, fail-closed 上浮。"""
+    from app.data_providers.base import ProviderRequestError
+
+    empty_payload = {"chart": {"result": [{
+        "meta": {"exchangeTimezoneName": "America/New_York"},
+        "timestamp": [], "indicators": {"quote": [{"close": []}]},
+        "events": {},
+    }], "error": None}}
+    provider = _provider({"RENAMED": empty_payload})
+    with pytest.raises(ProviderRequestError, match="RENAMED"):
+        provider.get_daily(["RENAMED"], None, None, asset_type="us")

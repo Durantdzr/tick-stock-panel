@@ -130,8 +130,13 @@ def _check_overlap(new_df: pl.DataFrame, stored: dict) -> tuple[str, float]:
     mean = sum(ratios) / len(ratios)
     if all(abs(r - 1.0) <= 1e-6 for r in ratios):
         return ("ok", 1.0)
-    if max(ratios) / min(ratios) <= 1.001 and abs(mean - 1.0) > _SPLIT_RATIO_TOLERANCE:
+    consistent = max(ratios) / min(ratios) <= 1.001
+    if consistent and abs(mean - 1.0) > _SPLIT_RATIO_TOLERANCE:
         return ("split", mean)
+    if consistent:
+        # 一致的小口径差 (≤0.5%, 厂商分位噪声/换源价差): 视为一致放行,
+        # 重叠行经 upsert 覆盖为新源值 (幂等) — 否则换源场景会永久拒收 (审查 I-2)
+        return ("ok", mean)
     return ("mismatch", mean)
 
 
@@ -439,8 +444,10 @@ def sync_us_adj_factors(repo, on_progress=None) -> dict:
         return {"ok": False, "error": "美股白名单为空"}
     anchors = _latest_factor_dates(repo)
     if anchors and all(s in anchors for s in symbols):
+        # 锚点 = 已存 max(trade_date); provider 过滤为排他 (trade_date > start_time),
+        # 已存 max 事件不会重放, max+1d 落点的新事件不会被吞掉 (审查 I-1)
         min_latest = min(anchors[s] for s in symbols)
-        anchor = datetime.combine(min_latest, datetime.min.time()) + timedelta(days=1)
+        anchor = datetime.combine(min_latest, datetime.min.time())
     else:
         anchor = None
     prev_closes = _us_daily_closes(repo)
