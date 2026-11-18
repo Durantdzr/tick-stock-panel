@@ -7,6 +7,8 @@ fail-closed 语义与 plugin.yaml 一致性。
 
 from __future__ import annotations
 
+import sys
+import types
 from itertools import pairwise
 from pathlib import Path
 
@@ -136,3 +138,108 @@ def test_test_dataset_rejects_unknown_dataset():
     out = BaostockProvider().test_dataset("minute", ["600519.SH"])
     assert out["rows"] == 0 and "error" in out
     assert "回退" in out["error"]
+
+
+# ================================================================
+# 会话失效自愈 (财务一直拉不到的根因: _logged_in 永久缓存, 服务端会话过期后全部查询静默失败)
+# ================================================================
+
+class _FakeRS:
+    def __init__(self, error_code="0", error_msg="", fields=None, rows=None):
+        self.error_code = error_code
+        self.error_msg = error_msg
+        self.fields = fields or []
+        self._rows = rows or []
+        self._i = 0
+
+    def next(self):
+        return self._i < len(self._rows)
+
+    def get_row_data(self):
+        row = self._rows[self._i]
+        self._i += 1
+        return row
+
+
+def _install_fake_baostock(monkeypatch, login_calls, next_profit_rs):
+    """替换 sys.modules['baostock'] 为受控桩; next_profit_rs(code,year,quarter) → RS。"""
+    import sys
+    import types
+
+    fake = types.ModuleType("baostock")
+    fake.login = lambda: (login_calls.append(1), _FakeRS(error_code="0"))[1]
+    fake.logout = lambda: None
+    for name in ("query_growth_data", "query_balance_data", "query_cash_flow_data", "query_operation_data"):
+        setattr(fake, name, lambda code, year, quarter: _FakeRS(fields=[], rows=[]))
+    fake.query_profit_data = next_profit_rs
+    monkeypatch.setitem(sys.modules, "baostock", fake)
+    return fake
+
+
+def test_financial_metrics_relogin_on_session_expired(monkeypatch):
+    """查询报「用户未登录」→ 重置登录标志 → 重登 → 同一查询重试一次。
+
+    baostock 服务端会话有时效且单会话互踢; 常驻 worker 的 _logged_in 永久
+    True 时, 过期后全部财务查询静默失败 (用户实测「财务一直获取不到」的根因)。
+    """
+    login_calls: list[int] = []
+    profit_calls: list[tuple] = []
+    profit_ok = _FakeRS(
+        fields=["code", "pubDate", "statDate", "roeAvg"],
+        rows=[["sh.600519", "2026-10-31", "2026-09-30", "0.24995"]],
+    )
+
+    def _next_profit_rs(code, year, quarter):
+        profit_calls.append((code, year, quarter))
+        return _FakeRS(error_code="10001", error_msg="用户未登录!") if len(profit_calls) == 1 else profit_ok
+
+    fake = types.ModuleType("baostock")
+    fake.login = lambda: (login_calls.append(1), _FakeRS(error_code="0"))[1]
+    fake.logout = lambda: None
+    for name in ("query_growth_data", "query_balance_data", "query_cash_flow_data", "query_operation_data"):
+        setattr(fake, name, lambda code, year, quarter: _FakeRS(fields=[], rows=[]))
+    fake.query_profit_data = _next_profit_rs
+    monkeypatch.setitem(sys.modules, "baostock", fake)
+
+    monkeypatch.setattr(bs, "_logged_in", True)  # 模拟常驻 worker 的过期登录态
+    p = BaostockProvider()
+    df = p._financial_metrics(["600519.SH"], latest_only=True)
+
+    assert not df.is_empty(), "重试后应拿到数据"
+    assert df.height == 1 and df["roe"][0] == pytest.approx(0.24995)
+    assert len(login_calls) >= 1, "会话失效后必须重新登录"
+    assert profit_calls.count(profit_calls[0]) == 2, "同一查询应恰好重试一次"
+
+
+def test_financial_metrics_relogin_on_network_error(monkeypatch):
+    """「网络接收错误」与用户未登录同源 (连接/会话失效), 同样触发重登重试。
+
+    metrics 8 小时长跑后连接断开时, shares 同步曾整轮 0 行 (错误文案不同
+    未被自愈匹配捕获)。
+    """
+    login_calls: list[int] = []
+    profit_calls: list[tuple] = []
+    profit_ok = _FakeRS(
+        fields=["code", "pubDate", "statDate", "roeAvg", "totalShare"],
+        rows=[["sh.600519", "2026-10-31", "2026-09-30", "0.24995", "1256197800.00"]],
+    )
+
+    def _next_profit_rs(code, year, quarter):
+        profit_calls.append((code, year, quarter))
+        return _FakeRS(error_code="10002", error_msg="网络接收错误。") if len(profit_calls) == 1 else profit_ok
+
+    fake = types.ModuleType("baostock")
+    fake.login = lambda: (login_calls.append(1), _FakeRS(error_code="0"))[1]
+    fake.logout = lambda: None
+    for name in ("query_growth_data", "query_balance_data", "query_cash_flow_data", "query_operation_data"):
+        setattr(fake, name, lambda code, year, quarter: _FakeRS(fields=[], rows=[]))
+    fake.query_profit_data = _next_profit_rs
+    monkeypatch.setitem(sys.modules, "baostock", fake)
+
+    monkeypatch.setattr(bs, "_logged_in", True)
+    p = BaostockProvider()
+    df = p._financial_metrics(["600519.SH"], latest_only=True)
+
+    assert not df.is_empty(), "网络错误重试后应拿到数据"
+    assert len(login_calls) >= 1, "网络接收错误必须重登"
+    assert profit_calls.count(profit_calls[0]) == 2

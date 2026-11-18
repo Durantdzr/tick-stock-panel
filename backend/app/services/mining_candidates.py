@@ -35,7 +35,8 @@ _FACTOR_DEFINITION_FIELDS = frozenset({"kind", "factor_names", "scoring", "direc
 _EXISTING_DEFINITION_FIELDS = frozenset({"kind", "strategy_id"})
 _BACKLINK_FIELDS = frozenset({"promoted_candidate_id", "published_strategy_id"})
 # mining-v3 新增列: v2 历史工件缺失时不拒读 (按产出时口径放行), 只在存在时校验类型
-_OPTIONAL_ARTIFACT_COLUMNS = frozenset({"oos_worst_sharpe"})
+# mining-v3 新增列: v2 历史工件缺失时不拒读 (按产出时口径放行), 只在存在时校验类型
+_OPTIONAL_ARTIFACT_COLUMNS = frozenset({"oos_worst_sharpe", "oos_sharpe_ci_low"})
 _PUBLISHED_PREFIX = "mined_factor_"
 _STRATEGY_ID_PATTERN = re.compile(r"^mined_factor_[A-Za-z0-9_-]{1,49}$")
 _ARTIFACT_SCHEMA = {
@@ -53,6 +54,7 @@ _ARTIFACT_SCHEMA = {
     "oos_max_drawdown": pl.Float64,
     "oos_positive_fold_ratio": pl.Float64,
     "oos_n_trades": pl.Int64,
+    "oos_sharpe_ci_low": pl.Float64,
     "confidence": pl.String,
     "valid_folds": pl.Int64,
     "skipped_folds": pl.Int64,
@@ -127,6 +129,7 @@ class MiningCandidateService:
                 max_drawdown=row.get("oos_max_drawdown"),
                 n_trades=row.get("oos_n_trades"),
                 worst_fold_sharpe=row.get("oos_worst_sharpe"),
+                sharpe_ci_low=row.get("oos_sharpe_ci_low"),
             )
             if not gate.qualified:
                 raise ValueError(
@@ -538,6 +541,7 @@ class MiningCandidateService:
             "oos_max_drawdown",
             "oos_positive_fold_ratio",
             "oos_n_trades",
+            "oos_sharpe_ci_low",
             "valid_folds",
             "skipped_folds",
             "confidence",

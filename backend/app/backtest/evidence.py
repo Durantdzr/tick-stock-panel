@@ -489,6 +489,26 @@ class EvidenceRecorder:
     def minute_sample_days(days):
         return set(_cutoffs(days))
 
+    def _model_provenance(self, effective_config: dict) -> dict | None:
+        """AI 策略的模型来源与回测区间重叠警告; 无 provenance 的策略不输出该块。"""
+        meta = getattr(self.strategy, "meta", None)
+        provenance = meta.get("provenance") if isinstance(meta, dict) else None
+        if not isinstance(provenance, dict):
+            return None
+        generated_at = str(provenance.get("generated_at") or "")
+        backtest_end = str(effective_config.get("end") or self.config.end)[:10]
+        return {
+            "source": provenance.get("source"),
+            "provider": provenance.get("provider"),
+            "model": provenance.get("model"),
+            "generated_at": generated_at,
+            "backtest_end": backtest_end,
+            # 回测区间晚于生成时刻: 策略代码可能吸收了生成时已知的行情。
+            "status": "warning"
+            if generated_at[:10] and backtest_end > generated_at[:10]
+            else "ok",
+        }
+
     def finish(self, result, effective_config: dict) -> dict:
         checks = [check for report in self.reports for check in report["checks"]]
         summary = _report(checks)
@@ -508,12 +528,14 @@ class EvidenceRecorder:
         }
         strategy["sha256"] = json_digest(strategy)
         runtime = self.runtime
+        model_provenance = self._model_provenance(effective_config)
         return {
             "schema_version": 1, "run_id": result.run_id,
             "created_at": datetime.now(UTC).isoformat(),
             "runtime": runtime,
             "config": effective_config, "config_sha256": config_digest,
             "strategy": strategy,
+            "model_provenance": model_provenance,
             "data": {
                 "sha256": data_digest, "origin": "local_normalized_snapshot",
                 "asset_type": self.config.asset_type, "daily_price_basis": "qfq",
@@ -524,6 +546,10 @@ class EvidenceRecorder:
             }),
             "lookahead": {**summary, "reports": self.reports, "sampled": True},
             "execution_timing": audit_trade_timing(result.trades, effective_config, self.strategy.execution_backend),
+            # 附加统计检验 (置换/Bootstrap): 诊断附件, 无则留 None。
+            "validation": getattr(result, "validation", None)
+            if isinstance(getattr(result, "validation", None), dict)
+            else None,
             "outputs": self.outputs,
             "result_summary": {
                 key: _scalar(result.stats.get(key)) for key in (

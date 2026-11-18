@@ -702,3 +702,16 @@ def test_publish_factor_records_guardian_baseline(tmp_path) -> None:
     guardian.append_check(result["strategy_id"], {"verdict": "healthy"})
     service.publish(run_id, signature)
     assert len(guardian.get(result["strategy_id"])["checks"]) == 1
+
+
+def test_artifact_schema_has_permutation_column():
+    import polars as pl
+
+    from app.services.mining_candidates import (
+        _ARTIFACT_SCHEMA,
+        _OPTIONAL_ARTIFACT_COLUMNS,
+    )
+
+    assert "oos_sharpe_ci_low" in _ARTIFACT_SCHEMA
+    assert _ARTIFACT_SCHEMA["oos_sharpe_ci_low"] == pl.Float64
+    assert "oos_sharpe_ci_low" in _OPTIONAL_ARTIFACT_COLUMNS

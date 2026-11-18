@@ -235,3 +235,40 @@ class TestGateWorstFold:
 
     def test_balanced_unaffected_by_worst(self):
         assert self._gate(confidence="standard", worst_fold_sharpe=-2.0).qualified
+
+
+class TestGateSharpeCILow:
+    """OOS Bootstrap Sharpe 置信下界维度: 点估计过线但下界<=0 (赢家扎堆) 不发布。
+
+    语义与 worst_fold_sharpe 相同: None (历史工件无此列) 放行, 不追溯执行。
+    """
+
+    def _gate(self, **overrides):
+        from app.backtest.mining import evaluate_candidate_gate
+
+        params = dict(
+            confidence="high",
+            valid_folds=3,
+            positive_fold_ratio=1.0,
+            sharpe=1.2,
+            max_drawdown=-0.1,
+            n_trades=100,
+            worst_fold_sharpe=0.3,
+        )
+        params.update(overrides)
+        return evaluate_candidate_gate(**params)
+
+    def test_legacy_artifact_without_ci_passes(self):
+        assert self._gate(sharpe_ci_low=None).qualified
+
+    def test_nonpositive_ci_rejected(self):
+        result = self._gate(sharpe_ci_low=-0.1)
+        assert not result.qualified
+        assert any("CI lower bound" in r for r in result.reasons)
+
+    def test_zero_ci_rejected(self):
+        result = self._gate(sharpe_ci_low=0.0)
+        assert not result.qualified
+
+    def test_positive_ci_passes(self):
+        assert self._gate(sharpe_ci_low=0.2).qualified

@@ -150,6 +150,13 @@ datasets:
 | --- | --- |
 | `pct_unit: percent` | `change_pct` / `amplitude` / `turnover_rate` 无条件 `/100` |
 | `pct_unit: decimal` | 三列原样透传 |
+
+daily 数据集支持 `price_basis` 价格口径声明（默认 `raw`，即未复权价——本仓库模型是
+provider 交 raw 日线 + `adj_factor` 数据集后本地前复权）：
+
+- `price_basis: adjusted` 声明源交付的已是复权价；此时**禁止**同时声明 `adj_factor`
+  数据集（配置层直接拒绝），否则 enriched 会再乘一次调整因子造成双重复权；
+- 不声明视为 `raw`，行为与既有源完全一致。
 | 未声明 | `change_pct` 按截面中位数归一(A 股涨跌停 30% 上限使两种单位物理可分);`amplitude` / `turnover_rate` **置 `None`** 交由 pipeline 按价格与股本口径重算,并记录 WARNING |
 | 列已配置 `transforms` | 视为用户已接管该列单位,原样透传 |
 

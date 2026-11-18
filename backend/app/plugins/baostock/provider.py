@@ -177,6 +177,31 @@ def _query_dicts(rs) -> list[dict[str, str]]:
     return [dict(zip(rs.fields, row, strict=False)) for row in rows]
 
 
+def _run_with_session_retry(fn):
+    """执行一次 baostock 查询; 会话失效(用户未登录)时重登并重试同一查询。
+
+    baostock 服务端会话有时效且单会话互踢; 常驻 worker 的 _logged_in 标志不会
+    随服务端会话过期, 不自愈会导致登录态失效后全部查询静默失败 (逐标的循环
+    吞掉 ProviderRequestError), 表现为「财务/因子一直拉不到、0 行无错误」。
+
+    前置: 调用方已持有 _lock (全部调用点都在 with _lock 块内), _ensure_login
+    契约为「调用方持锁」; 此处不得再加锁 — threading.Lock 不可重入, 会自死锁。
+    """
+    try:
+        return fn()
+    except ProviderRequestError as e:
+        global _logged_in
+        msg = str(e)
+        # 「用户未登录」= 服务端会话过期; 「网络接收错误」= 连接层失效 (长跑后
+        # 连接断开, shares 同步曾因此整轮 0 行)。两者同源, 均重登后重试一次。
+        if "用户未登录" not in msg and "网络接收错误" not in msg:
+            raise
+        logger.warning("baostock 会话/连接失效 (%s), 重新登录后重试该查询", msg[:30])
+        _logged_in = False
+        _ensure_login()
+        return fn()
+
+
 def cumulative_to_event_factors(cum_factors: list[float]) -> list[float]:
     """涨跌幅复权累积因子链 → 项目单事件比值序列。
 
@@ -248,9 +273,9 @@ class BaostockProvider:
                     failed += 1
                     continue
                 try:
-                    rows = _query_rows(bs.query_adjust_factor(
+                    rows = _run_with_session_retry(lambda code=code, end_d=end_d: _query_rows(bs.query_adjust_factor(
                         code=code, start_date=_FULL_HISTORY_START, end_date=end_d,
-                    ))
+                    )))
                 except ProviderRequestError as e:
                     logger.warning("baostock 因子拉取失败 %s: %s", symbol, e)
                     failed += 1
@@ -341,9 +366,10 @@ class BaostockProvider:
                 got_any = False
                 for year, quarter in quarters:
                     try:
-                        profit_rows = _query_dicts(
-                            bs.query_profit_data(code=code, year=year, quarter=quarter)
-                        )
+                        profit_rows = _run_with_session_retry(
+                            lambda code=code, year=year, quarter=quarter: _query_dicts(
+                                bs.query_profit_data(code=code, year=year, quarter=quarter)
+                            ))
                     except ProviderRequestError as e:
                         logger.warning("baostock 财务 %s %dQ%d 失败: %s", symbol, year, quarter, e)
                         continue
@@ -366,7 +392,8 @@ class BaostockProvider:
                             continue
                         fn = getattr(bs, f"query_{iface}_data")
                         try:
-                            data = _query_dicts(fn(code=code, year=year, quarter=quarter))
+                            data = _run_with_session_retry(
+                                lambda fn=fn, code=code, year=year, quarter=quarter: _query_dicts(fn(code=code, year=year, quarter=quarter)))
                         except ProviderRequestError as e:
                             logger.warning("baostock %s %s %dQ%d 失败: %s", iface, symbol, year, quarter, e)
                             continue
@@ -403,9 +430,10 @@ class BaostockProvider:
                     continue
                 for year, quarter in quarters:
                     try:
-                        profit_rows = _query_dicts(
-                            bs.query_profit_data(code=code, year=year, quarter=quarter)
-                        )
+                        profit_rows = _run_with_session_retry(
+                            lambda code=code, year=year, quarter=quarter: _query_dicts(
+                                bs.query_profit_data(code=code, year=year, quarter=quarter)
+                            ))
                     except ProviderRequestError as e:
                         logger.warning("baostock 股本 %s %dQ%d 失败: %s", symbol, year, quarter, e)
                         continue

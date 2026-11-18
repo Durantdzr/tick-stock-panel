@@ -86,6 +86,9 @@ def list_sources() -> list[dict]:
             "name": provider.name,
             "display_name": provider.config.display_name,
             "datasets": sorted(provider.config.datasets.keys()),
+            "price_basis": getattr(
+                provider.config.datasets.get("daily"), "price_basis", None
+            ),
             "path": str(provider.config.path) if provider.config.path else None,
         }
         for provider in _PROVIDERS.values()
@@ -453,6 +456,12 @@ def _sanitize_for_yaml(config: dict) -> dict:
         ds = _sanitize_dataset(ds_name, ds_cfg)
         if ds:
             datasets_out[ds_name] = ds
+    daily_basis = (datasets_out.get("daily") or {}).get("price_basis")
+    if daily_basis == "adjusted" and "adj_factor" in datasets_out:
+        raise ValueError(
+            "daily: price_basis=adjusted 与 adj_factor 数据集互斥 —— "
+            "源已交付复权价, enriched 再乘调整因子会双重复权"
+        )
     out["datasets"] = datasets_out
     return out
 
@@ -521,6 +530,13 @@ def _sanitize_dataset(ds_name: str, ds_cfg: dict) -> dict:
         if pct_unit not in ("percent", "decimal"):
             raise ValueError(f"{ds_name}: pct_unit 必须是 percent 或 decimal")
         out["pct_unit"] = pct_unit
+    price_basis = str(ds_cfg.get("price_basis") or "").strip().lower()
+    if price_basis:
+        if ds_name != "daily":
+            raise ValueError(f"{ds_name}: price_basis 仅用于 daily 数据集")
+        if price_basis not in ("raw", "adjusted"):
+            raise ValueError(f"{ds_name}: price_basis 必须是 raw 或 adjusted")
+        out["price_basis"] = price_basis
     if ds_name == "minute":
         asset_type_param = str(ds_cfg.get("asset_type_param") or "").strip()
         freq_param = str(ds_cfg.get("freq_param") or "").strip()

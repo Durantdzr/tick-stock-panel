@@ -88,6 +88,41 @@ def test_star_import_is_blocked():
         _validate("from app.backtest.matrix import *")
 
 
+# ================================================================
+# 点分导入与属性链分量 (借镜 VT 深层扫描的分量级检查)
+# ================================================================
+def test_dotted_import_asname_with_forbidden_component_is_blocked():
+    """import numpy.ctypeslib as nct 后 nct.load_library 可加载任意动态库。
+
+    根包检查只看 numpy 放行导入; 用法走别名根 nct, 链上没有暴露
+    ctypeslib 句柄的内层 Attribute 节点, 现有末位属性检查够不到。
+    """
+    with pytest.raises(ValueError, match="ctypeslib"):
+        _validate(
+            """
+            import numpy.ctypeslib as nct
+
+            def filter(df):
+                return nct.load_library("x", "/tmp")
+            """
+        )
+
+
+def test_whitelist_component_chains_still_pass():
+    """合法分量链不得误伤: 函数属性 / 别名变量 / 纯导入合法子模块。"""
+    _validate(
+        """
+        import numpy
+        import numpy.linalg
+        n = numpy
+
+        def filter(df):
+            arr = n.arange(10)
+            return arr.reshape(2, 5).sum()
+        """
+    )
+
+
 def test_namespace_package_import_is_blocked():
     with pytest.raises(ValueError, match="白名单"):
         _validate("import app.strategy")

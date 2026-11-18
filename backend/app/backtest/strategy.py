@@ -701,6 +701,38 @@ class StrategyBacktestResult:
     elapsed_ms: float = 0.0
     error: str | None = None
     evidence: dict | None = None
+    validation: dict | None = None
+
+
+def _attach_validation(
+    result: StrategyBacktestResult,
+    *,
+    policy: BacktestResultPolicy,
+    initial_capital: float,
+) -> None:
+    """附加交易顺序置换检验与 Bootstrap Sharpe CI。
+
+    纯附加诊断附件: 任何失败都降级为 validation.error 块, 不影响回测主结果;
+    优化器试跑 (policy 关闭) 与错误/空交易结果不产出。
+    """
+    if not policy.include_validation or result.error or not result.trades:
+        return
+    try:
+        from app.backtest.validation import bootstrap_sharpe_ci, permutation_test
+
+        pnls = [float(trade.get("pnl_amount") or 0.0) for trade in result.trades]
+        equity = [
+            float(row["equity"])
+            for row in result.equity_curve
+            if row.get("equity") is not None
+        ]
+        result.validation = {
+            "status": "ok",
+            "permutation": permutation_test(pnls, initial_capital=initial_capital),
+            "bootstrap": bootstrap_sharpe_ci(equity),
+        }
+    except Exception as exc:  # noqa: BLE001 — 诊断附件的失败必须与回测结果隔离
+        result.validation = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
 
 @dataclass(frozen=True)
@@ -715,6 +747,7 @@ class BacktestResultPolicy:
     include_return_distribution: bool = True
     include_benchmark: bool = True
     include_strategy_info: bool = True
+    include_validation: bool = True
 
     @classmethod
     def optimizer_trial(cls, objective: str) -> BacktestResultPolicy:
@@ -728,6 +761,7 @@ class BacktestResultPolicy:
             include_per_symbol_stats=False,
             include_return_distribution=False,
             include_benchmark=False,
+            include_validation=False,
             include_strategy_info=False,
         )
 
@@ -2104,7 +2138,7 @@ class StrategyBacktestService:
 
         elapsed = (time.perf_counter() - t0) * 1000
 
-        return StrategyBacktestResult(
+        final = StrategyBacktestResult(
             run_id=run_id,
             config=self._config_to_dict(config),
             stats=selected_stats,
@@ -2125,6 +2159,8 @@ class StrategyBacktestService:
             factor_attribution=factor_attribution,
             elapsed_ms=round(elapsed, 1),
         )
+        _attach_validation(final, policy=result_policy, initial_capital=config.initial_capital)
+        return final
 
     # ── 分钟策略回测: 逐日回放入场 + 日K矩阵离场 ──
 
@@ -2413,7 +2449,7 @@ class StrategyBacktestService:
 
         selected_stats = result_policy.select_stats(result.stats)
         elapsed = (time.perf_counter() - t0) * 1000
-        return StrategyBacktestResult(
+        final = StrategyBacktestResult(
             run_id=run_id,
             config=self._config_to_dict(config),
             stats=selected_stats,
@@ -2429,6 +2465,8 @@ class StrategyBacktestService:
             strategy_info=strategy_info,
             elapsed_ms=round(elapsed, 1),
         )
+        _attach_validation(final, policy=result_policy, initial_capital=config.initial_capital)
+        return final
 
     # ── 全量模拟 (策略能力统计, 不建组合不算净值) ──
 

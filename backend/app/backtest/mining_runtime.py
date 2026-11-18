@@ -55,6 +55,7 @@ from app.backtest.strategy import (
     _merge_resolved_feature_plans,
     build_matrix_cache_profile,
 )
+from app.backtest.validation import bootstrap_sharpe_ci
 from app.enriched_generation import (
     EnrichedGenerationUnavailableError,
     enriched_publication_incomplete,
@@ -73,12 +74,14 @@ _MINING_MATRIX_CACHE_BYTES = 32 * 1024 * 1024
 _RESULT_POLICY = BacktestResultPolicy(
     required_stats=frozenset({"total_return", "sharpe", "max_drawdown", "n_trades"}),
     include_monte_carlo=False,
-    include_curves=False,
+    # include_curves 仅为提取每折 OOS 日收益 (置换检验输入); 净值曲线本身不外传
+    include_curves=True,
     include_trades=False,
     include_per_symbol_stats=False,
     include_return_distribution=False,
     include_benchmark=False,
     include_strategy_info=False,
+    include_validation=False,
 )
 _REGIME_FILTERS: dict[str, dict[str, list[str]]] = {
     "strong": {"states": ["strong", "lean_strong"]},
@@ -245,6 +248,8 @@ class MatcherCandidateEvaluator:
                 key: _finite_or_none(result.stats.get(key))
                 for key in ("total_return", "sharpe", "max_drawdown", "n_trades")
             }
+            # OOS 日收益序列 (分块置换检验的输入): 只保留紧凑浮点列表
+            metrics["daily_returns"] = _daily_returns_of(result.equity_curve)
             score = _finite_or_none(metrics.get("sharpe"))
             if score is None:
                 return CandidateEvaluation(
@@ -1165,12 +1170,7 @@ def _build_artifacts(
                 n_dates=n_dates,
                 reason=None,
             ))
-    folds = pl.DataFrame(fold_rows, schema_overrides={
-        "total_return": pl.Float64,
-        "sharpe": pl.Float64,
-        "max_drawdown": pl.Float64,
-        "n_trades": pl.Int64,
-    })
+    folds = pl.DataFrame(fold_rows, schema_overrides=_FOLDS_SCHEMA_OVERRIDES)
 
     candidate_rows = []
     overall_rows = [row for row in fold_rows if row["regime_state"] == "overall"]
@@ -1204,6 +1204,13 @@ def _build_artifacts(
         sharpes = [row["sharpe"] for row in successful if row["sharpe"] is not None]
         drawdowns = [row["max_drawdown"] for row in successful if row["max_drawdown"] is not None]
         trades = [row["n_trades"] for row in successful if row["n_trades"] is not None]
+        # 各折 OOS 日收益拼接 (外层折窗口互不重叠, 拼接即候选的真实 OOS 路径)
+        oos_daily = [
+            segment
+            for row in successful
+            for segment in (row.get("daily_returns") or [])
+        ]
+        ci_low = _sharpe_ci_low(oos_daily)
         definition = candidate.definition()
         candidate_rows.append({
             "signature": candidate.candidate_id,
@@ -1234,6 +1241,7 @@ def _build_artifacts(
                 sum(value > 0 for value in returns) / len(returns) if returns else None
             ),
             "oos_n_trades": sum(int(value) for value in trades) if trades else None,
+            "oos_sharpe_ci_low": ci_low,
             "confidence": _confidence(request.profile),
             "valid_folds": len(successful),
             "skipped_folds": len(rows) - len(successful),
@@ -1251,6 +1259,7 @@ def _build_artifacts(
         "oos_max_drawdown": pl.Float64,
         "oos_positive_fold_ratio": pl.Float64,
         "oos_n_trades": pl.Int64,
+        "oos_sharpe_ci_low": pl.Float64,
         "strategy_id": pl.Utf8,
         "promoted_candidate_id": pl.Utf8,
         "published_strategy_id": pl.Utf8,
@@ -1340,6 +1349,40 @@ def _top_quintile_turnover(
     return float(np.mean(values)) if values else 0.0
 
 
+def _sharpe_ci_low(oos_daily: list[float]) -> float | None:
+    """拼接 OOS 日收益 → 复利净值 → Bootstrap Sharpe 置信下界 (门禁 v4 维度)。"""
+    if not oos_daily:
+        return None
+    equity = list(np.cumprod(1.0 + np.asarray(oos_daily, dtype=np.float64)))
+    result = bootstrap_sharpe_ci(equity)
+    return result["ci_low"] if result["status"] == "ok" else None
+
+
+# daily_returns 必须显式声明 List(Float64): 混合 None/list 行依赖推断时,
+# 超过 infer_schema_length=100 且前段全 None (大面积 skip) 会推断成 Null 抛 SchemaError。
+_FOLDS_SCHEMA_OVERRIDES = {
+    "total_return": pl.Float64,
+    "sharpe": pl.Float64,
+    "max_drawdown": pl.Float64,
+    "n_trades": pl.Int64,
+    "daily_returns": pl.List(pl.Float64),
+}
+
+
+def _daily_returns_of(equity_curve: list[dict]) -> list[float] | None:
+    """净值曲线 → 日收益浮点列表; 曲线缺失或含非有限净值时返回 None。"""
+    if not equity_curve:
+        return None
+    equity = [row.get("equity") for row in equity_curve]
+    if any(value is None for value in equity) or len(equity) < 2:
+        return None
+    values = np.asarray(equity, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns = np.diff(values) / values[:-1]
+    returns = returns[np.isfinite(returns)]
+    return [float(value) for value in returns]
+
+
 def _fold_row(
     fold_index: int,
     candidate: MiningCandidate | None,
@@ -1373,6 +1416,7 @@ def _fold_row(
         "sharpe": _finite_or_none(metrics.get("sharpe")),
         "max_drawdown": _finite_or_none(metrics.get("max_drawdown")),
         "n_trades": _int_or_none(metrics.get("n_trades")),
+        "daily_returns": (metrics.get("daily_returns") if evaluation is not None else None),
         "skipped": evaluation is None or error is not None,
         "reason": error,
     }
@@ -1501,6 +1545,7 @@ def _refine_champion_weights(
                     else evaluation.metrics.get("n_trades")
                     for key in ("total_return", "sharpe", "max_drawdown", "n_trades")
                 }
+                | {"daily_returns": evaluation.metrics.get("daily_returns")}
             )
         fold_results[ratios] = per_fold
 
@@ -1578,6 +1623,10 @@ def _refine_champion_weights(
         fold["max_drawdown"] for fold in successful if fold["max_drawdown"] is not None
     ]
     trades = [fold["n_trades"] for fold in successful if fold["n_trades"] is not None]
+    oos_daily = [
+        segment for fold in successful for segment in (fold.get("daily_returns") or [])
+    ]
+    ci_low = _sharpe_ci_low(oos_daily)
     row = {
         "signature": refined_signature,
         "name": _candidate_name(champion) + " · 权重精调",
@@ -1601,6 +1650,7 @@ def _refine_champion_weights(
             sum(value > 0 for value in returns) / len(returns) if returns else None
         ),
         "oos_n_trades": sum(int(value) for value in trades) if trades else None,
+        "oos_sharpe_ci_low": ci_low,
         "confidence": _confidence(request.profile),
         "valid_folds": len(successful),
         "skipped_folds": len(folds) - len(successful),
