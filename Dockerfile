@@ -92,6 +92,10 @@ RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
 # (<root>/backend/app/) 推导的, 容器内会错算到 /。这里用环境变量显式指定
 # 三个关键路径, 确保 static / tiers / data 都指向容器内正确位置。
 COPY backend/app ./app
+# backend/scripts: KiT 子进程 runner (kit_predict_runner.py) 与 setup_kit.sh 等。
+# kit_prediction.py 按 parents[2]/scripts 解析, 容器内即 /app/scripts —
+# 缺失时 KiT 预测报 "runner 缺失" (数据卷里 venv/ckpt 俱在也无法运行)。
+COPY backend/scripts ./scripts
 COPY tiers.yaml /app/tiers.yaml
 # 版本号运行时兜底 (issue #513): 非冻结路径 _load_version() 读
 # /app/frontend/package.json, 缺文件会静默回退 _FALLBACK_VERSION 显示旧版本。
