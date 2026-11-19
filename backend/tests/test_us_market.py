@@ -600,3 +600,32 @@ def test_us_sync_filters_junk_symbols_against_instruments(tmp_path, monkeypatch)
     assert result["ok"] is True
     requested = [symbols for symbols, _ in provider.daily_calls]
     assert all("US" not in s for batch in requested for s in batch)
+
+
+def test_us_sync_interrupted_pull_keeps_stale_instruments(tmp_path, monkeypatch):
+    """分页中断 → 不落盘部分数据, 沿用既有完整维表 (防维表缩水)。"""
+    repo = KlineRepository(DataStore(tmp_path))
+    # 既有完整维表 (13352 只)
+    repo.save_us_instruments(pl.DataFrame({
+        "symbol": [f"S{i:04d}" for i in range(13352)],
+        "name": ["x"] * 13352, "code": [f"S{i:04d}" for i in range(13352)],
+        "exchange": ["NASDAQ"] * 13352, "asset_type": ["us"] * 13352,
+        "source": ["fake"] * 13352,
+    }))
+    us_universe.save_universe(tmp_path, ["AAPL"])
+
+    class _InterruptedProvider:
+        name = "fake"
+        fetch_instruments_page = None  # 无分页方法 → provider 分支跳过
+
+    provider = _InterruptedProvider()
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: provider)
+    monkeypatch.setattr(us_sync, "is_us_trading_session_day", lambda: False)
+    # instruments 阶段抛 ProviderRequestError (分页中断的抽象)
+    monkeypatch.setattr(
+        us_sync, "sync_us_instruments",
+        lambda r: (_ for _ in ()).throw(ProviderRequestError("分页中断")),
+    )
+    result = us_sync.run_us_sync(repo)
+    # 整体失败留痕, 但既有维表文件不被部分数据覆盖
+    assert result["ok"] is False

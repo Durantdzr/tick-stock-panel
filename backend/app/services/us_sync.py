@@ -236,6 +236,7 @@ def sync_us_instruments(repo) -> int:
     total = manifest.get("total")
 
     page = 1
+    completed = False
     try:
         while True:
             if page in done:
@@ -259,6 +260,7 @@ def sync_us_instruments(repo) -> int:
             time.sleep(1.0)  # 限频保护
             if total and len(done) * 100 >= total:
                 break
+        completed = True
     except ProviderRequestError as e:
         # 部分网络环境屏蔽 push2 目录域名 (K线端点 push2his 不受影响):
         # 中途失败走 fail-open, 沿用既有维表继续 K 线同步。
@@ -275,6 +277,15 @@ def sync_us_instruments(repo) -> int:
             return stale_count
         logger.warning("美股 instruments 拉取为空, 保留既有维表")
         return 0
+    if not completed and have_stale:
+        # 分页中断: 不用部分数据覆盖完整维表 (防缩水), 沿用既有维表继续。
+        # 已拉取的页缓存保留, 下次同步从断点续拉。
+        stale_count = repo.get_us_instruments().height
+        logger.warning(
+            "美股目录分页中断 (页 %d), 沿用既有维表 (%d 只) 继续 K 线同步",
+            page, stale_count,
+        )
+        return stale_count
     all_inst = pl.DataFrame(rows).select(INSTRUMENT_COLS).unique(
         subset=["symbol"], keep="last").sort("symbol")
     repo.save_us_instruments(all_inst)
