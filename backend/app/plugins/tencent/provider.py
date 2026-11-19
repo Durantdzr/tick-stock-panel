@@ -232,7 +232,10 @@ class TencentProvider:
                 time.sleep(_DAILY_INTERVAL_S)
             code = _tencent_code(symbol)
             if code is None:
-                raise ProviderRequestError(f"腾讯分钟K: 无法识别标的 {symbol} (不含北交所)")
+                # 北交所等超出插件声明范围的标的: 全市场批量场景下跳过并告警,
+                # 不中断整批 (显式指定且全部不可服务时由调用方按空结果处理)。
+                logger.warning("腾讯分钟K: 跳过不支持的标的 %s (不含北交所)", symbol)
+                continue
             data = self._get_json(_MINUTE_URL, params={"param": f"{code},m1,,{_M1_MAX_BARS}"})
             node = data.get(code) or {}
             rows = []

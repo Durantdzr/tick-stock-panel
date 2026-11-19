@@ -574,3 +574,29 @@ def test_us_sync_daily_overlap_vendor_noise_ok(tmp_path, monkeypatch):
     result = us_sync.sync_us_daily(repo, incremental=True)
     assert result["ok"] is True and result["errors"] == [], "厂商分位噪声不得触发拒绝落盘"
     assert _read_us_daily(repo)["date"].max() == latest + timedelta(days=1)
+
+
+# ================================================================
+# 垃圾标的防护 (白名单误输入导致整轮同步全失败的回归)
+# ================================================================
+
+def test_us_sync_filters_junk_symbols_against_instruments(tmp_path, monkeypatch):
+    repo = KlineRepository(DataStore(tmp_path))
+    """白名单条目若不在全市场维表中 → 剔除并告警, 不让垃圾条目毒化整轮同步。
+
+    回归背景: NAS 线上白名单曾被写成 ["US"], 全部标的拉取失败。
+    """
+    # 维表: 只有 AAPL 是真实标的
+    repo.save_us_instruments(pl.DataFrame({
+        "symbol": ["AAPL"], "name": ["Apple"], "code": ["AAPL"],
+        "exchange": ["NASDAQ"], "asset_type": ["us"], "source": ["x"],
+    }))
+    us_universe.save_universe(tmp_path, ["AAPL", "US"])  # US = 垃圾条目
+
+    provider = _FakeUSProvider()
+    monkeypatch.setattr(us_sync, "_us_provider", lambda: provider)
+
+    result = us_sync.sync_us_daily(repo)
+    assert result["ok"] is True
+    requested = [symbols for symbols, _ in provider.daily_calls]
+    assert all("US" not in s for batch in requested for s in batch)

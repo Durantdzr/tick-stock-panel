@@ -293,6 +293,18 @@ def sync_us_daily(repo, *, incremental: bool = True, on_progress=None) -> dict:
     if not symbols:
         return {"ok": False, "error": "美股白名单为空"}
 
+    # 垃圾标的防护: 白名单条目必须存在于全市场维表 (如误输入 "US" 这类
+    # 非上市代码), 否则剔除并告警 — 防止单条垃圾导致整轮同步全失败。
+    have = set(repo.get_us_instruments()["symbol"].cast(pl.Utf8).to_list()) \
+        if not repo.get_us_instruments().is_empty() else set()
+    if have:
+        unknown = [s for s in symbols if s not in have]
+        if unknown:
+            logger.warning("美股白名单剔除不在全市场维表中的条目: %s", unknown)
+            symbols = [s for s in symbols if s in have]
+    if not symbols:
+        return {"ok": False, "error": "美股白名单全部条目都不在全市场维表中"}
+
     existing_max: dict = _latest_daily_dates(repo) if incremental else {}
     frames: list[pl.DataFrame] = []
     errors: list[str] = []
