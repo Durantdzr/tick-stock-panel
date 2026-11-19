@@ -65,15 +65,30 @@ _MINUTE_HISTORY_DAYS = 5  # klt=1 近端深度 (东财常用口径, 与 A 股同
 
 
 def availability() -> tuple[bool, str]:
-    """loader 启动自检: 探测一次美股 kline 连通性。不抛异常。"""
-    try:
-        probe = EastmoneyUSProvider()
-        data = probe._fetch_kline("105.AAPL", "101", "20260101", "20260110")
-    except Exception as e:  # noqa: BLE001
-        return False, f"公开接口不可达: {e}"
-    if not isinstance(data, dict) or not data.get("klines"):
-        return False, "接口返回空数据, 结构可能已变化"
-    return True, "ok"
+    """loader 启动自检: 探测美股 kline 连通性。不抛异常。
+
+    重试 3 次 (2s/4s 退避): 东财对 NAS 等出口 IP 间歇拒连, 单次探测失败
+    常为瞬态 — 探针失败会让插件整个会话不可注册, 代价远大于多等几秒。
+    """
+    last_err: str | None = None
+    for attempt in range(3):
+        try:
+            probe = EastmoneyUSProvider()
+            data = probe._fetch_kline("105.AAPL", "101", "20260101", "20260110")
+        except Exception as e:  # noqa: BLE001
+            last_err = f"公开接口不可达: {e}"
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return False, last_err
+        if not isinstance(data, dict) or not data.get("klines"):
+            last_err = "接口返回空数据, 结构可能已变化"
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return False, last_err
+        return True, "ok"
+    return False, last_err or "探测失败"
 
 
 @dataclass
